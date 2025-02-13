@@ -97,29 +97,44 @@ Sequence([
 
 */
 
+enum EffectNumber {
+    Constant(i32),
+    CountCard(CardSelector),
+    CountCost(CardSelector),
+}
+
 // カードの働きを記述するためのメタ言語
 enum CardEffect {
     Noop,
     Sequence(Vec<CardEffect>),
     AtomicSequence(Box<CardEffect>),
+    Optional(Box<CardEffect>),
 
     // Select系：カードを選択し、Focusの選択先を変更した上で、効果を適用する
-    SelectExact(i32, CardSelector, Box<CardEffect>), // ちょうどn枚選択
-    SelectFewer(i32, CardSelector, Box<CardEffect>), // n枚以下選択
+    SelectExact(EffectNumber, CardSelector, Box<CardEffect>), // ちょうどn枚選択
+    SelectFewer(EffectNumber, CardSelector, Box<CardEffect>), // n枚以下選択
+    SelectAny(CardSelector, Box<CardEffect>),                 // 好きなだけ選択
 
     // Select亜種だけどプレイヤーの選択を必要としない
     FocusAll(CardSelector, Box<CardEffect>),
 
-    PlusDraw(i32),
-    PlusAction(i32),
-    PlusBuy(i32),
-    PlusCoin(i32),
+    // デッキトップ公開・Focus
+    RevealTop(EffectNumber, Box<CardEffects>),
+
+    UseCard(CardSelector),
+
+    PlusDraw(EffectNumber),
+    PlusAction(EffectNumber),
+    PlusBuy(EffectNumber),
+    PlusCoin(EffectNumber),
+
     TrashCard(CardSelector),
     DiscardCard(CardSelector),
     GainCard(CardNameSelector),
-    Optional(Box<CardEffect>),
+
     AllOpponents(Box<CardEffect>),
     Atack(Box<CardEffect>),
+    PreventAttack,
 }
 
 enum Zones {
@@ -135,7 +150,7 @@ enum CardNameSelector {
     NameAnd(Vec<CardNameSelector>),
     NameOr(Vec<CardNameSelector>),
     NameNot(Box<CardNameSelector>),
-    Type(CardType),
+    HasType(CardType),
     CostLower(i32),
     CostHigher(i32),
 }
@@ -149,16 +164,17 @@ enum CardSelector {
     CardOr(Vec<CardSelector>),
 }
 
-mod vanilla_cards {
+mod card_util {
     use crate::CardEffect::*;
     use crate::CardType::*;
+    use crate::EffectNumber::*;
     use crate::*;
     pub fn vanilla_effect(draw: i32, action: i32, buy: i32, coin: i32) -> CardEffect {
         CardEffect::Sequence(vec![
-            CardEffect::PlusDraw(draw),
-            CardEffect::PlusAction(action),
-            CardEffect::PlusBuy(buy),
-            CardEffect::PlusCoin(coin),
+            CardEffect::PlusDraw(Constant(draw)),
+            CardEffect::PlusAction(Constant(action)),
+            CardEffect::PlusBuy(Constant(buy)),
+            CardEffect::PlusCoin(Constant(coin)),
         ])
     }
 
@@ -191,7 +207,7 @@ mod vanilla_cards {
             vp: 0,
             action: Noop,
             reaction: Noop,
-            treasure: PlusCoin(coin),
+            treasure: PlusCoin(Constant(coin)),
             types: vec![Treasure],
         }
     }
@@ -243,12 +259,16 @@ mod vanilla_cards {
             },
         }
     }
+
+    pub fn focused() -> CardSelector {
+        CardSelector::ByZone(Zones::Focused)
+    }
 }
 
 mod expansions {
     pub mod basic_supply {
         use crate::*;
-        use vanilla_cards::*;
+        use card_util::*;
         // 基本カード
         pub fn copper() -> Card {
             vanilla_treasure_card("Copper", "銅貨", 0, 1)
@@ -273,7 +293,7 @@ mod expansions {
         }
     }
     pub mod base {
-        use crate::{vanilla_cards::simple_action_card, CardEffect::*, CardType::*, *};
+        use crate::{card_util::*, CardEffect::*, CardType::*, EffectNumber::*, *};
 
         /* ドミニオン 基本セット（第2版）
         カードリスト
@@ -306,7 +326,87 @@ mod expansions {
         */
 
         pub fn cellar() -> Card {
-            simple_action_card("Cellar", "地下貯蔵庫", 2, false)
+            simple_action_card(
+                "Cellar",
+                "地下貯蔵庫",
+                2,
+                false,
+                Sequence(vec![
+                    PlusAction(Constant(1)),
+                    SelectAny(
+                        CardSelector::ByZone(Zones::Hand),
+                        Box::new(Sequence(vec![
+                            PlusDraw(CountCard(focused())),
+                            DiscardCard(focused()),
+                        ])),
+                    ),
+                ]),
+            )
+        }
+
+        pub fn chapel() -> Card {
+            simple_action_card(
+                "Chapel",
+                "礼拝堂",
+                2,
+                false,
+                Sequence(vec![SelectFewer(
+                    Constant(4),
+                    CardSelector::ByZone(Zones::Hand),
+                    Box::new(TrashCard(focused())),
+                )]),
+            )
+        }
+
+        pub fn moat() -> Card {
+            Card {
+                name: "Moat".to_string(),
+                localized_name: "堀".to_string(),
+                cost: 2,
+                vp: 0,
+                action: vanilla_effect(2, 0, 0, 0),
+                reaction: PreventAttack,
+                treasure: Noop,
+                types: vec![Action, Reaction],
+            }
+        }
+
+        pub fn chancellor() -> Card {
+            simple_action_card(
+                "Chancellor",
+                "家臣",
+                3,
+                false,
+                Sequence(vec![
+                    PlusCoin(Constant(2)), // +2金
+                    RevealTop(
+                        // デッキトップ1枚公開
+                        Constant(1),
+                        FocusAll(
+                            // アクションだったら
+                            CardSelector::CardAnd(vec![
+                                CardSelector::ByZone(Zones::Focused),
+                                CardSelector::ByName(CardNameSelector::HasType(Action)),
+                            ]),
+                            // 使ってもよい
+                            Box::new(Optional(Box::new(Sequence(vec![
+                                UseCard(focused()),
+                                DiscardCard(focused()),
+                            ])))),
+                        ),
+                    ),
+                ]),
+            )
+        }
+
+        pub fn workshop() -> Card {
+            simple_action_card(
+                "Workshop",
+                "工房",
+                3,
+                false,
+                GainCard(CardNameSelector::CostLower(4)),
+            )
         }
     }
 }
