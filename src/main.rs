@@ -18,6 +18,7 @@ struct PlayerId {
 
 struct Card {
     name: String,
+    localized_name: String,
     cost: i32,
     vp: i32,
     action: CardEffect,
@@ -148,47 +149,164 @@ enum CardSelector {
     CardOr(Vec<CardSelector>),
 }
 
-fn vanillaEffect(draw: i32, action: i32, buy: i32, coin: i32) -> CardEffect {
-    CardEffect::Sequence(vec![
-        CardEffect::PlusDraw(draw),
-        CardEffect::PlusAction(action),
-        CardEffect::PlusBuy(buy),
-        CardEffect::PlusCoin(coin),
-    ])
-}
+mod vanilla_cards {
+    use crate::CardEffect::*;
+    use crate::CardType::*;
+    use crate::*;
+    pub fn vanilla_effect(draw: i32, action: i32, buy: i32, coin: i32) -> CardEffect {
+        CardEffect::Sequence(vec![
+            CardEffect::PlusDraw(draw),
+            CardEffect::PlusAction(action),
+            CardEffect::PlusBuy(buy),
+            CardEffect::PlusCoin(coin),
+        ])
+    }
 
-fn vanillaActionCard(name: &str, cost: i32, draw: i32, action: i32, buy: i32, coin: i32) -> Card {
-    Card {
-        name: name.to_string(),
-        cost,
-        vp: 0,
-        action: vanillaEffect(draw, action, buy, coin),
-        reaction: CardEffect::Noop,
-        treasure: CardEffect::Noop,
-        types: vec![],
+    pub fn vanilla_action_card(
+        name: &str,
+        localized_name: &str,
+        cost: i32,
+        draw: i32,
+        action: i32,
+        buy: i32,
+        coin: i32,
+    ) -> Card {
+        Card {
+            name: name.to_string(),
+            localized_name: localized_name.to_string(),
+            cost,
+            vp: 0,
+            action: vanilla_effect(draw, action, buy, coin),
+            reaction: Noop,
+            treasure: Noop,
+            types: vec![Action],
+        }
+    }
+
+    pub fn vanilla_treasure_card(name: &str, localized_name: &str, cost: i32, coin: i32) -> Card {
+        Card {
+            name: name.to_string(),
+            localized_name: localized_name.to_string(),
+            cost,
+            vp: 0,
+            action: Noop,
+            reaction: Noop,
+            treasure: PlusCoin(coin),
+            types: vec![Treasure],
+        }
+    }
+
+    pub fn vanilla_vp_card(name: &str, localized_name: &str, cost: i32, vp: i32) -> Card {
+        Card {
+            name: name.to_string(),
+            localized_name: localized_name.to_string(),
+            cost,
+            vp,
+            action: Noop,
+            reaction: Noop,
+            treasure: Noop,
+            types: vec![Victory],
+        }
+    }
+    pub fn vanilla_curse_card() -> Card {
+        Card {
+            name: "Curse".to_string(),
+            localized_name: "呪い".to_string(),
+            cost: 0,
+            vp: -1,
+            action: Noop,
+            reaction: Noop,
+            treasure: Noop,
+            types: vec![Curse],
+        }
+    }
+
+    pub fn simple_action_card(
+        name: &str,
+        localized_name: &str,
+        cost: i32,
+        has_attack: bool,
+        effect: CardEffect,
+    ) -> Card {
+        Card {
+            name: name.to_string(),
+            localized_name: localized_name.to_string(),
+            cost,
+            vp: 0,
+            action: effect,
+            reaction: Noop,
+            treasure: Noop,
+            types: if has_attack {
+                vec![Action, Reaction]
+            } else {
+                vec![Action]
+            },
+        }
     }
 }
 
-fn vanillaTreasureCard(name: &str, cost: i32, coin: i32) -> Card {
-    Card {
-        name: name.to_string(),
-        cost,
-        vp: 0,
-        action: CardEffect::Noop,
-        reaction: CardEffect::Noop,
-        treasure: CardEffect::PlusCoin(coin),
-        types: vec![],
+mod expansions {
+    pub mod basic_supply {
+        use crate::*;
+        use vanilla_cards::*;
+        // 基本カード
+        pub fn copper() -> Card {
+            vanilla_treasure_card("Copper", "銅貨", 0, 1)
+        }
+        pub fn silver() -> Card {
+            vanilla_treasure_card("Silver", "銀貨", 3, 2)
+        }
+        pub fn gold() -> Card {
+            vanilla_treasure_card("Gold", "金貨", 6, 3)
+        }
+        pub fn estate() -> Card {
+            vanilla_vp_card("Estate", "屋敷", 2, 1)
+        }
+        pub fn duchy() -> Card {
+            vanilla_vp_card("Duchy", "公領", 5, 3)
+        }
+        pub fn province() -> Card {
+            vanilla_vp_card("Province", "属州", 8, 6)
+        }
+        pub fn curse() -> Card {
+            vanilla_curse_card()
+        }
     }
-}
+    pub mod base {
+        use crate::{vanilla_cards::simple_action_card, CardEffect::*, CardType::*, *};
 
-fn vanillaVPCard(name: &str, cost: i32, vp: i32) -> Card {
-    Card {
-        name: name.to_string(),
-        cost,
-        vp,
-        action: CardEffect::Noop,
-        reaction: CardEffect::Noop,
-        treasure: CardEffect::Noop,
-        types: vec![],
+        /* ドミニオン 基本セット（第2版）
+        カードリスト
+        - 地下貯蔵庫
+        - 礼拝堂
+        - 堀
+        - 家臣
+        - 工房
+        - 商人
+        - 前駆者
+        - 村
+        - 改築
+        - 鍛冶屋
+        - 金貸し
+        - 玉座の間
+        - 密猟者
+        - 民兵
+        - 役人
+        - 庭園
+        - 市場
+        - 衛兵
+        - 議事堂
+        - 研究所
+        - 鉱山
+        - 祝祭
+        - 書庫
+        - 山賊
+        - 魔女
+        - 職人
+        */
+
+        pub fn cellar() -> Card {
+            simple_action_card("Cellar", "地下貯蔵庫", 2, false)
+        }
     }
 }
