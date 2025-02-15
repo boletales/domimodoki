@@ -1,3 +1,5 @@
+use std::collections::VecDeque;
+
 fn main() {
     println!("Hello, world!");
 }
@@ -12,6 +14,7 @@ struct Player<'a> {
     id: PlayerId,
 }
 
+#[derive(Clone, Copy)]
 struct PlayerId {
     id: i32,
 }
@@ -30,15 +33,9 @@ struct CardInstance<'a> {
     id: CardId,
 }
 
+#[derive(Clone, Copy)]
 struct CardId {
     id: i32,
-}
-
-struct Game<'a> {
-    players: Vec<Player<'a>>,
-    supply: Vec<(Card, i32)>,
-    trash: Vec<CardInstance<'a>>,
-    turn: i32,
 }
 
 enum CardType {
@@ -51,10 +48,13 @@ enum CardType {
 }
 
 enum EffectTrigger {
-    OnAttack,       // Focus: 空, PreventDefaultで攻撃を無効化
-    OnPlayAction,   // Focus: 空
-    OnPlayTreasure, // Focus: 空
-    OnCardPlay,     // Focus: カード
+    Attacked,       // Focus: 空, PreventDefaultで攻撃を無効化
+    PlayAsAction,   // Focus: 空
+    PlayAsTreasure, // Focus: 空
+    CardPlayed,     // Focus: カード
+    Cleanup,        // Focus: 空, PreventDefaultで場にあっても捨て札にしない
+    MyTurnStart,
+    MyTurnEnd,
 }
 
 enum EffectNumber {
@@ -82,8 +82,8 @@ enum EffectCond {
 enum CardEffect {
     Noop,
     Sequence(Vec<CardEffect>),
-    AtomicSequence(Vec<CardEffect>), // 「不可能な指示は無視」ができない場合（改築の破棄→獲得など）に使う
-    Optional(Box<CardEffect>),
+    AtomicSequence(Vec<CardEffect>), // 「不可能な指示は無視」ができない場合（改築の破棄→獲得など）に使う。SkipContinueを伝播
+    Optional(String, Box<CardEffect>),
 
     // Select系：カードを選択し、Focusの選択先を変更した上で、効果を適用する
     SelectExact(String, EffectNumber, CardSelector, Box<CardEffect>), // ちょうどn枚選択
@@ -92,6 +92,12 @@ enum CardEffect {
 
     // Select亜種だけどプレイヤーの選択を必要としない
     FocusAll(CardSelector, Box<CardEffect>),
+
+    // Select亜種 手札から廃棄
+    TrashHand(EffectNumber),
+
+    // Select亜種 手札を捨てる
+    DiscardHand(EffectNumber),
 
     // デッキトップ公開・Focus
     RevealTop(EffectNumber, Box<CardEffect>),
@@ -153,6 +159,101 @@ enum CardSelector {
     CardOr(Vec<CardSelector>),
 }
 
+enum TurnPhase {
+    Action,
+    Buy,
+    Cleanup,
+}
+
+struct Game<'a> {
+    players: Vec<Player<'a>>,
+    supply: Vec<(Card, i32)>,
+    trash: Vec<CardInstance<'a>>,
+    turn: i32,
+    stack: Vec<EffectStackFrame<'a>>,
+}
+
+struct EffectStackFrame<'a> {
+    player: &'a Player<'a>,
+    target: &'a Player<'a>,
+    effect_queue: VecDeque<CardEffect>,
+    focus: Vec<CardInstance<'a>>,
+    cause: Option<CardInstance<'a>>,
+    atomic: bool,
+}
+
+enum EffectStepResult {
+    Continue,
+    Error(String),
+    AskCard(PlayerId, String, Vec<String>),
+    SkipContinue, // 不可能な指示なので飛ばす
+    End,
+}
+
+mod player_util {
+    use rand::Rng;
+
+    use crate::{CardInstance, Player};
+
+    fn shuffle(player: &mut Player) {
+        // Fisher-Yates shuffle
+        for i in (1..player.deck.len()).rev() {
+            let j = rand::rng().random_range(0..=i);
+            player.deck.swap(i, j);
+        }
+    }
+
+    fn reshuffle(player: &mut Player) {
+        player.deck.extend(player.discard.drain(..));
+        shuffle(player);
+    }
+
+    fn draw(player: &mut Player, n: i32) {
+        for _ in 0..n {
+            if player.deck.is_empty() {
+                reshuffle(player);
+            }
+            if player.deck.is_empty() {
+                return;
+            }
+            player.hand.push(player.deck.pop().unwrap());
+        }
+    }
+}
+
+fn step(game: &mut Game) -> EffectStepResult {
+    use {CardEffect::*, EffectStepResult::*, Zone::*};
+
+    let Some(frame) = game.stack.last_mut() else {
+        return EffectStepResult::End;
+    };
+
+    let Some(effect) = frame.effect_queue.pop_front() else {
+        game.stack.pop();
+        return EffectStepResult::Continue;
+    };
+
+    match effect {
+        Noop => Continue,
+        Sequence(effects) => {
+            frame.effect_queue.extend(effects.into_iter());
+            Continue
+        }
+        AtomicSequence(effects) => {
+            game.stack.push(EffectStackFrame {
+                player: frame.player,
+                target: frame.target,
+                effect_queue: effects.into_iter().collect(),
+                focus: frame.focus,
+                cause: frame.cause,
+                atomic: true,
+            });
+            Continue
+        }
+        _ => SkipContinue,
+    }
+}
+
 mod card_util {
 
     use crate::{CardType::*, EffectNumber::*, EffectTrigger::*, *};
@@ -180,7 +281,7 @@ mod card_util {
             localized_name: localized_name.to_owned(),
             cost,
             vp: Constant(0),
-            rules: vec![(OnPlayAction, vanilla_effect(draw, action, buy, coin))],
+            rules: vec![(PlayAsAction, vanilla_effect(draw, action, buy, coin))],
             types: vec![Action],
         }
     }
@@ -191,7 +292,7 @@ mod card_util {
             localized_name: localized_name.to_owned(),
             cost,
             vp: Constant(0),
-            rules: vec![(OnPlayTreasure, vanilla_effect(0, 0, 0, coin))],
+            rules: vec![(PlayAsTreasure, vanilla_effect(0, 0, 0, coin))],
             types: vec![Treasure],
         }
     }
@@ -244,7 +345,7 @@ mod card_util {
             name,
             localized_name,
             cost,
-            vec![(OnPlayAction, effect)],
+            vec![(PlayAsAction, effect)],
             if has_attack {
                 vec![Action, Attack]
             } else {
@@ -368,8 +469,8 @@ mod expansions {
                 cost: 2,
                 vp: Constant(0),
                 rules: vec![
-                    (OnPlayAction, Sequence(vec![PlusDraw(Constant(2))])),
-                    (OnAttack, Sequence(vec![PreventDefault])),
+                    (PlayAsAction, Sequence(vec![PlusDraw(Constant(2))])),
+                    (Attacked, Sequence(vec![PreventDefault])),
                 ],
                 types: vec![Action, Reaction],
             }
@@ -394,10 +495,13 @@ mod expansions {
                                 CardSelector::ByName(CardNameSelector::HasType(Action)),
                             ]),
                             // 使ってもよい
-                            Box::new(Optional(Box::new(Sequence(vec![
-                                UseCard(focused()),
-                                DiscardCard(focused()),
-                            ])))),
+                            Box::new(Optional(
+                                "アクションを使用しますか？".to_owned(),
+                                Box::new(Sequence(vec![
+                                    UseCard(focused()),
+                                    DiscardCard(focused()),
+                                ])),
+                            )),
                         )),
                     ),
                 ]),
@@ -423,11 +527,11 @@ mod expansions {
                 3,
                 vec![
                     (
-                        OnPlayAction,
+                        PlayAsAction,
                         Sequence(vec![PlusDraw(Constant(1)), PlusAction(Constant(1))]),
                     ),
                     (
-                        OnCardPlay,
+                        CardPlayed,
                         Sequence(vec![If(
                             Eq(
                                 CountCard(CardSelector::CardAnd(vec![
@@ -504,18 +608,21 @@ mod expansions {
                 "金貸し",
                 4,
                 false,
-                Optional(Box::new(SelectExact(
-                    "破棄するカードを選んでください".to_owned(),
-                    Constant(1),
-                    CardSelector::CardAnd(vec![
-                        CardSelector::ByZone(Zone::Hand),
-                        CardSelector::ByName(CardNameSelector::Exact("Copper".to_owned())),
-                    ]),
-                    Box::new(AtomicSequence(vec![
-                        TrashCard(focused()),
-                        PlusCoin(Constant(3)),
-                    ])),
-                ))),
+                Optional(
+                    "財宝を破棄しますか？".to_owned(),
+                    Box::new(SelectExact(
+                        "破棄するカードを選んでください".to_owned(),
+                        Constant(1),
+                        CardSelector::CardAnd(vec![
+                            CardSelector::ByZone(Zone::Hand),
+                            CardSelector::ByName(CardNameSelector::Exact("Copper".to_owned())),
+                        ]),
+                        Box::new(AtomicSequence(vec![
+                            TrashCard(focused()),
+                            PlusCoin(Constant(3)),
+                        ])),
+                    )),
+                ),
             )
         }
 
@@ -685,24 +792,27 @@ mod expansions {
                 "鉱山",
                 5,
                 false,
-                Optional(Box::new(SelectExact(
-                    "破棄するカードを選んでください".to_owned(),
-                    Constant(1),
-                    CardSelector::CardAnd(vec![
-                        CardSelector::ByZone(Zone::Hand),
-                        CardSelector::ByName(CardNameSelector::HasType(Treasure)),
-                    ]),
-                    Box::new(AtomicSequence(vec![
-                        TrashCard(focused()),
-                        GainCard(CardNameSelector::NameAnd(vec![
-                            CardNameSelector::HasType(Treasure),
-                            CardNameSelector::CostLower(Box::new(Plus(
-                                Box::new(CountCost(focused())),
-                                Box::new(Constant(3)),
-                            ))),
+                Optional(
+                    "財宝を破棄しますか？".to_owned(),
+                    Box::new(SelectExact(
+                        "破棄するカードを選んでください".to_owned(),
+                        Constant(1),
+                        CardSelector::CardAnd(vec![
+                            CardSelector::ByZone(Zone::Hand),
+                            CardSelector::ByName(CardNameSelector::HasType(Treasure)),
+                        ]),
+                        Box::new(AtomicSequence(vec![
+                            TrashCard(focused()),
+                            GainCard(CardNameSelector::NameAnd(vec![
+                                CardNameSelector::HasType(Treasure),
+                                CardNameSelector::CostLower(Box::new(Plus(
+                                    Box::new(CountCost(focused())),
+                                    Box::new(Constant(3)),
+                                ))),
+                            ])),
                         ])),
-                    ])),
-                ))),
+                    )),
+                ),
             )
         }
 

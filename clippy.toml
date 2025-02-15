@@ -1,0 +1,13 @@
+[clippy]
+# Enable all Clippy lints
+warn = ["clippy::all"]
+
+# Customize lint levels
+deny = ["clippy::correctness"]
+warn = ["clippy::style", "clippy::complexity", "clippy::perf", "clippy::pedantic"]
+
+# Allow specific lints
+allow = ["clippy::module_name_repetitions"]
+
+# Customize lint options
+clippy::too_many_arguments_threshold = 7
