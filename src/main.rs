@@ -62,6 +62,7 @@ enum EffectNumber {
     CountCard(CardSelector),
     CountCost(CardSelector),
     EmptyPiles,
+    UpTo(Box<EffectNumber>),
     Plus(Box<EffectNumber>, Box<EffectNumber>),
     Minus(Box<EffectNumber>, Box<EffectNumber>),
     Times(Box<EffectNumber>, Box<EffectNumber>), // 乗算
@@ -86,9 +87,8 @@ enum CardEffect {
     Optional(String, Box<CardEffect>),
 
     // Select系：カードを選択し、Focusの選択先を変更した上で、効果を適用する
-    SelectExact(String, EffectNumber, CardSelector, Box<CardEffect>), // ちょうどn枚選択
-    SelectUpto(String, EffectNumber, CardSelector, Box<CardEffect>),  // n枚以下選択
-    SelectAny(String, CardSelector, Box<CardEffect>),                 // 好きなだけ選択
+    Select(String, EffectNumber, CardSelector, Box<CardEffect>), // n枚選択
+    SelectAny(String, CardSelector, Box<CardEffect>),            // 好きなだけ選択
 
     // Select亜種だけどプレイヤーの選択を必要としない
     FocusAll(CardSelector, Box<CardEffect>),
@@ -447,18 +447,7 @@ mod expansions {
 
         // 礼拝堂 手札から最大4枚まで選んで廃棄する。
         pub fn chapel() -> Card {
-            simple_action_card(
-                "Chapel",
-                "礼拝堂",
-                2,
-                false,
-                Sequence(vec![SelectUpto(
-                    "廃棄するカードを選んでください".to_owned(),
-                    Constant(4),
-                    CardSelector::ByZone(Zone::Hand),
-                    Box::new(TrashCard(focused())),
-                )]),
-            )
+            simple_action_card("Chapel", "礼拝堂", 2, false, TrashHand)
         }
 
         // 堀 +2ドロー。他のプレイヤーがアタックカードをプレイしたとき、手札からこのカードを公開すると、そのアタックカードの効果を受けない。
