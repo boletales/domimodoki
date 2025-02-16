@@ -23,7 +23,7 @@ struct Card {
     name: String,
     localized_name: String,
     cost: i32,
-    vp: EffectNumber,
+    vp: Number,
     rules: Vec<(EffectTrigger, CardEffect)>,
     types: Vec<CardType>,
 }
@@ -57,23 +57,23 @@ enum EffectTrigger {
     MyTurnEnd,
 }
 
-enum EffectNumber {
+enum Number {
     Constant(i32),
     CountCard(CardSelector),
     CountCost(CardSelector),
-    EmptyPiles,
-    UpTo(Box<EffectNumber>),
-    Plus(Box<EffectNumber>, Box<EffectNumber>),
-    Minus(Box<EffectNumber>, Box<EffectNumber>),
-    Times(Box<EffectNumber>, Box<EffectNumber>), // 乗算
-    Div(Box<EffectNumber>, Box<EffectNumber>),   // 整数除算、切り捨て
-    Mod(Box<EffectNumber>, Box<EffectNumber>),   // 剰余
+    CountEmptyPiles,
+    UpTo(Box<Number>),
+    Plus(Box<Number>, Box<Number>),
+    Minus(Box<Number>, Box<Number>),
+    Times(Box<Number>, Box<Number>), // 乗算
+    Div(Box<Number>, Box<Number>),   // 整数除算、切り捨て
+    Mod(Box<Number>, Box<Number>),   // 剰余
 }
 
 enum EffectCond {
-    Leq(EffectNumber, EffectNumber),
-    Geq(EffectNumber, EffectNumber),
-    Eq(EffectNumber, EffectNumber),
+    Leq(Number, Number),
+    Geq(Number, Number),
+    Eq(Number, Number),
     CondAnd(Vec<EffectCond>),
     CondOr(Vec<EffectCond>),
     CondNot(Box<EffectCond>),
@@ -87,20 +87,17 @@ enum CardEffect {
     Optional(String, Box<CardEffect>),
 
     // Select系：カードを選択し、Focusの選択先を変更した上で、効果を適用する
-    Select(String, EffectNumber, CardSelector, Box<CardEffect>), // n枚選択
-    SelectAny(String, CardSelector, Box<CardEffect>),            // 好きなだけ選択
+    Select(String, Number, CardSelector, Box<CardEffect>), // n枚選択
+    SelectAny(String, CardSelector, Box<CardEffect>),      // 好きなだけ選択
 
-    // Select亜種だけどプレイヤーの選択を必要としない
+    // Select亜種 該当カードすべてを選択、プレイヤーの選択を必要としない
     FocusAll(CardSelector, Box<CardEffect>),
 
-    // Select亜種 手札から廃棄
-    TrashHand(EffectNumber),
-
-    // Select亜種 手札を捨てる
-    DiscardHand(EffectNumber),
+    TrashSelect(Number, CardSelector, Box<CardEffect>), // Select亜種 手札から廃棄
+    DiscardSelect(Number, CardSelector, Box<CardEffect>), // Select亜種 手札を捨てる
 
     // デッキトップ公開・Focus
-    RevealTop(EffectNumber, Box<CardEffect>),
+    RevealTop(Number, Box<CardEffect>),
 
     If(EffectCond, Box<CardEffect>),
     While(EffectCond, Box<CardEffect>),
@@ -108,10 +105,10 @@ enum CardEffect {
 
     UseCard(CardSelector),
 
-    PlusDraw(EffectNumber),
-    PlusAction(EffectNumber),
-    PlusBuy(EffectNumber),
-    PlusCoin(EffectNumber),
+    PlusDraw(Number),
+    PlusAction(Number),
+    PlusBuy(Number),
+    PlusCoin(Number),
 
     TrashCard(CardSelector),
     DiscardCard(CardSelector),
@@ -146,8 +143,7 @@ enum CardNameSelector {
     NameOr(Vec<CardNameSelector>),
     NameNot(Box<CardNameSelector>),
     HasType(CardType),
-    CostLower(Box<EffectNumber>),
-    CostHigher(Box<EffectNumber>),
+    Cost(Box<Number>),
 }
 
 enum CardSelector {
@@ -256,7 +252,7 @@ fn step(game: &mut Game) -> EffectStepResult {
 
 mod card_util {
 
-    use crate::{CardType::*, EffectNumber::*, EffectTrigger::*, *};
+    use crate::{CardType::*, EffectTrigger::*, Number::*, *};
 
     pub fn vanilla_effect(draw: i32, action: i32, buy: i32, coin: i32) -> CardEffect {
         CardEffect::Sequence(vec![
@@ -357,6 +353,14 @@ mod card_util {
     pub fn focused() -> CardSelector {
         CardSelector::ByZone(Zone::Focused)
     }
+
+    pub fn hand() -> CardSelector {
+        CardSelector::ByZone(Zone::Hand)
+    }
+
+    pub fn upto(n: i32) -> Number {
+        Number::UpTo(Box::new(Constant(n)))
+    }
 }
 
 mod expansions {
@@ -390,8 +394,7 @@ mod expansions {
         use std::vec;
 
         use crate::{
-            card_util::*, CardEffect::*, CardType::*, EffectCond::*, EffectNumber::*,
-            EffectTrigger::*, *,
+            card_util::*, CardEffect::*, CardType::*, EffectCond::*, EffectTrigger::*, Number::*, *,
         };
 
         /* ドミニオン 基本セット（第2版）
@@ -447,7 +450,13 @@ mod expansions {
 
         // 礼拝堂 手札から最大4枚まで選んで廃棄する。
         pub fn chapel() -> Card {
-            simple_action_card("Chapel", "礼拝堂", 2, false, TrashHand)
+            simple_action_card(
+                "Chapel",
+                "礼拝堂",
+                2,
+                false,
+                TrashSelect(upto(4), CardSelector::ByZone(Zone::Hand), Box::new(Noop)),
+            )
         }
 
         // 堀 +2ドロー。他のプレイヤーがアタックカードをプレイしたとき、手札からこのカードを公開すると、そのアタックカードの効果を受けない。
@@ -504,7 +513,7 @@ mod expansions {
                 "工房",
                 3,
                 false,
-                GainCard(CardNameSelector::CostLower(Box::new(Constant(4)))),
+                GainCard(CardNameSelector::Cost(Box::new(upto(4)))),
             )
         }
 
@@ -520,16 +529,22 @@ mod expansions {
                         Sequence(vec![PlusDraw(Constant(1)), PlusAction(Constant(1))]),
                     ),
                     (
+                        // 直訳：カードがプレイされたとき、今プレイされた銀貨の枚数が場の銀貨の枚数と等しい場合（意訳：このターンはじめて銀貨がプレイされたなら）、+1金
                         CardPlayed,
                         Sequence(vec![If(
                             Eq(
                                 CountCard(CardSelector::CardAnd(vec![
-                                    CardSelector::ByZone(Zone::Play),
+                                    CardSelector::ByZone(Zone::Focused),
                                     CardSelector::ByName(CardNameSelector::Exact(
                                         "Silver".to_owned(),
                                     )),
                                 ])),
-                                Constant(1),
+                                CountCard(CardSelector::CardAnd(vec![
+                                    CardSelector::ByZone(Zone::Focused),
+                                    CardSelector::ByName(CardNameSelector::Exact(
+                                        "Silver".to_owned(),
+                                    )),
+                                ])),
                             ),
                             Box::new(PlusCoin(Constant(1))),
                         )]),
@@ -570,18 +585,14 @@ mod expansions {
                 "改築",
                 4,
                 false,
-                Sequence(vec![SelectExact(
-                    "改築するカードを選んでください".to_owned(),
+                TrashSelect(
                     Constant(1),
-                    CardSelector::ByZone(Zone::Hand),
-                    Box::new(AtomicSequence(vec![
-                        TrashCard(focused()),
-                        GainCard(CardNameSelector::CostLower(Box::new(Plus(
-                            Box::new(CountCost(focused())),
-                            Box::new(Constant(2)),
-                        )))),
-                    ])),
-                )]),
+                    hand(),
+                    Box::new(GainCard(CardNameSelector::Cost(Box::new(Plus(
+                        Box::new(CountCost(focused())),
+                        Box::new(Constant(2)),
+                    ))))),
+                ),
             )
         }
 
@@ -599,11 +610,10 @@ mod expansions {
                 false,
                 Optional(
                     "財宝を破棄しますか？".to_owned(),
-                    Box::new(SelectExact(
-                        "破棄するカードを選んでください".to_owned(),
+                    Box::new(TrashSelect(
                         Constant(1),
                         CardSelector::CardAnd(vec![
-                            CardSelector::ByZone(Zone::Hand),
+                            hand(),
                             CardSelector::ByName(CardNameSelector::Exact("Copper".to_owned())),
                         ]),
                         Box::new(AtomicSequence(vec![
@@ -622,11 +632,11 @@ mod expansions {
                 "玉座の間",
                 4,
                 false,
-                SelectExact(
+                Select(
                     "使用するカードを選んでください".to_owned(),
                     Constant(1),
                     CardSelector::CardAnd(vec![
-                        CardSelector::ByZone(Zone::Hand),
+                        hand(),
                         CardSelector::ByName(CardNameSelector::HasType(Action)),
                     ]),
                     Box::new(Sequence(vec![UseCard(focused()), UseCard(focused())])),
@@ -645,12 +655,7 @@ mod expansions {
                     PlusDraw(Constant(1)),
                     PlusAction(Constant(1)),
                     PlusCoin(Constant(1)),
-                    SelectExact(
-                        "捨てるカードを選んでください".to_owned(),
-                        EmptyPiles,
-                        CardSelector::ByZone(Zone::Hand),
-                        Box::new(DiscardCard(focused())),
-                    ),
+                    DiscardSelect(CountEmptyPiles, hand(), Box::new(DiscardCard(focused()))),
                 ]),
             )
         }
@@ -665,14 +670,10 @@ mod expansions {
                 Sequence(vec![
                     PlusCoin(Constant(2)),
                     AttackAllOpponents(Box::new(If(
-                        Geq(CountCard(CardSelector::ByZone(Zone::Hand)), Constant(4)),
-                        Box::new(SelectExact(
-                            "捨てるカードを選んでください".to_owned(),
-                            Minus(
-                                Box::new(CountCard(CardSelector::ByZone(Zone::Hand))),
-                                Box::new(Constant(3)),
-                            ),
-                            CardSelector::ByZone(Zone::Hand),
+                        Geq(CountCard(hand()), Constant(4)),
+                        Box::new(DiscardSelect(
+                            Minus(Box::new(CountCard(hand())), Box::new(Constant(3))),
+                            hand(),
                             Box::new(DiscardCard(focused())),
                         )),
                     ))),
@@ -689,11 +690,11 @@ mod expansions {
                 true,
                 Sequence(vec![
                     PlusCoin(Constant(2)),
-                    AttackAllOpponents(Box::new(SelectExact(
+                    AttackAllOpponents(Box::new(Select(
                         "デッキトップに置くカードを選んでください".to_owned(),
                         Constant(1),
                         CardSelector::CardAnd(vec![
-                            CardSelector::ByZone(Zone::Hand),
+                            hand(),
                             CardSelector::ByName(CardNameSelector::HasType(Victory)),
                         ]),
                         Box::new(MoveCard(focused(), Zone::DeckTop)),
@@ -783,21 +784,20 @@ mod expansions {
                 false,
                 Optional(
                     "財宝を破棄しますか？".to_owned(),
-                    Box::new(SelectExact(
-                        "破棄するカードを選んでください".to_owned(),
+                    Box::new(TrashSelect(
                         Constant(1),
                         CardSelector::CardAnd(vec![
-                            CardSelector::ByZone(Zone::Hand),
+                            hand(),
                             CardSelector::ByName(CardNameSelector::HasType(Treasure)),
                         ]),
                         Box::new(AtomicSequence(vec![
                             TrashCard(focused()),
                             GainCard(CardNameSelector::NameAnd(vec![
                                 CardNameSelector::HasType(Treasure),
-                                CardNameSelector::CostLower(Box::new(Plus(
+                                CardNameSelector::Cost(Box::new(UpTo(Box::new(Plus(
                                     Box::new(CountCost(focused())),
                                     Box::new(Constant(3)),
-                                ))),
+                                ))))),
                             ])),
                         ])),
                     )),
@@ -821,10 +821,10 @@ mod expansions {
                     Until(
                         CondOr(vec![
                             // 手札==7 or 手札+捨て札+デッキ <= 6
-                            Eq(CountCard(CardSelector::ByZone(Zone::Hand)), Constant(7)),
+                            Eq(CountCard(hand()), Constant(7)),
                             Leq(
                                 Plus(
-                                    Box::new(CountCard(CardSelector::ByZone(Zone::Hand))),
+                                    Box::new(CountCard(hand())),
                                     Box::new(Plus(
                                         Box::new(CountCard(CardSelector::ByZone(Zone::Discard))),
                                         Box::new(CountCard(CardSelector::ByZone(Zone::Deck))),
@@ -872,8 +872,7 @@ mod expansions {
                     GainCard(CardNameSelector::Exact("Gold".to_owned())),
                     AttackAllOpponents(Box::new(RevealTop(
                         Constant(2),
-                        Box::new(SelectExact(
-                            "破棄するカードを選んでください".to_owned(),
+                        Box::new(TrashSelect(
                             Constant(1),
                             CardSelector::CardAnd(vec![
                                 CardSelector::ByZone(Zone::Focused),
@@ -910,11 +909,11 @@ mod expansions {
                 6,
                 false,
                 Sequence(vec![
-                    GainCardToHand(CardNameSelector::CostLower(Box::new(Constant(5)))),
-                    SelectExact(
+                    GainCardToHand(CardNameSelector::Cost(Box::new(upto(5)))),
+                    Select(
                         "デッキトップに置くカードを選んでください".to_owned(),
                         Constant(1),
-                        CardSelector::ByZone(Zone::Hand),
+                        hand(),
                         Box::new(MoveCard(focused(), Zone::DeckTop)),
                     ),
                 ]),
