@@ -1,4 +1,4 @@
-use std::collections::VecDeque;
+use std::collections::{vec_deque, VecDeque};
 
 fn main() {
     println!("Hello, world!");
@@ -6,10 +6,13 @@ fn main() {
 
 // Dominion simulator
 
+#[derive(Clone)]
 struct Player<'a> {
     name: String,
     deck: Vec<CardInstance<'a>>,
     hand: Vec<CardInstance<'a>>,
+    play: Vec<CardInstance<'a>>,
+    pending: Vec<CardInstance<'a>>,
     discard: Vec<CardInstance<'a>>,
     id: PlayerId,
 }
@@ -28,6 +31,7 @@ struct Card {
     types: Vec<CardType>,
 }
 
+#[derive(Clone)]
 struct CardInstance<'a> {
     card: &'a Card,
     id: CardId,
@@ -38,6 +42,7 @@ struct CardId {
     id: i32,
 }
 
+#[derive(Clone)]
 enum CardType {
     Action,
     Treasure,
@@ -47,6 +52,7 @@ enum CardType {
     Attack,
 }
 
+#[derive(Clone)]
 enum EffectTrigger {
     Attacked,       // Focus: 空, PreventDefaultで攻撃を無効化
     PlayAsAction,   // Focus: 空
@@ -55,8 +61,10 @@ enum EffectTrigger {
     Cleanup,        // Focus: 空, PreventDefaultで場にあっても捨て札にしない
     MyTurnStart,
     MyTurnEnd,
+    OncePerTurn(Box<EffectTrigger>),
 }
 
+#[derive(Clone)]
 enum Number {
     Constant(i32),
     CountCard(CardSelector),
@@ -70,6 +78,7 @@ enum Number {
     Mod(Box<Number>, Box<Number>),   // 剰余
 }
 
+#[derive(Clone)]
 enum EffectCond {
     Leq(Number, Number),
     Geq(Number, Number),
@@ -84,11 +93,11 @@ enum CardEffect {
     Noop,
     Sequence(Vec<CardEffect>),
     AtomicSequence(Vec<CardEffect>), // 「不可能な指示は無視」ができない場合（改築の破棄→獲得など）に使う。SkipContinueを伝播
-    Optional(String, Box<CardEffect>),
+    Optional(AskOptionTag, Box<CardEffect>),
 
     // Select系：カードを選択し、Focusの選択先を変更した上で、効果を適用する
-    Select(String, Number, CardSelector, Box<CardEffect>), // n枚選択
-    SelectAny(String, CardSelector, Box<CardEffect>),      // 好きなだけ選択
+    Select(AskCardTag, Number, CardSelector, Box<CardEffect>), // n枚選択
+    SelectAny(AskCardTag, CardSelector, Box<CardEffect>),      // 好きなだけ選択
 
     // Select亜種 該当カードすべてを選択、プレイヤーの選択を必要としない
     FocusAll(CardSelector, Box<CardEffect>),
@@ -122,6 +131,7 @@ enum CardEffect {
     PreventDefault, // 「○○する代わりに」の、元の動作を無効化するやつ
 }
 
+#[derive(Clone)]
 enum Zone {
     // 実在のゾーン。配置対象としてもよい
     Deck,
@@ -137,6 +147,7 @@ enum Zone {
     Itself,
 }
 
+#[derive(Clone)]
 enum CardNameSelector {
     Exact(String),
     NameAnd(Vec<CardNameSelector>),
@@ -144,46 +155,61 @@ enum CardNameSelector {
     NameNot(Box<CardNameSelector>),
     HasType(CardType),
     Cost(Box<Number>),
+    Any,
 }
 
-enum CardSelector {
-    ByName(CardNameSelector),
-    ByZone(Zone),
-    DeckTop(i32),
-    DeckBottom(i32),
-    CardAnd(Vec<CardSelector>),
-    CardOr(Vec<CardSelector>),
+#[derive(Clone)]
+struct CardSelector {
+    name: CardNameSelector,
+    zone: Vec<Zone>,
 }
 
+#[derive(Clone)]
 enum TurnPhase {
     Action,
     Buy,
     Cleanup,
 }
 
+#[derive(Clone)]
 struct Game<'a> {
     players: Vec<Player<'a>>,
-    supply: Vec<(Card, i32)>,
+    supply: Vec<(&'a Card, i32)>,
     trash: Vec<CardInstance<'a>>,
     turn: i32,
     stack: Vec<EffectStackFrame<'a>>,
 }
 
+#[derive(Clone)]
 struct EffectStackFrame<'a> {
     player: &'a Player<'a>,
     target: &'a Player<'a>,
-    effect_queue: VecDeque<CardEffect>,
-    focus: Vec<CardInstance<'a>>,
-    cause: Option<CardInstance<'a>>,
+    effect_queue: VecDeque<&'a CardEffect>,
+    focus: Vec<&'a CardInstance<'a>>,
+    cause: Option<&'a CardInstance<'a>>,
     atomic: bool,
 }
 
-enum EffectStepResult {
+enum EffectStepResult<'a> {
     Continue,
     Error(String),
-    AskCard(PlayerId, String, Vec<String>),
-    SkipContinue, // 不可能な指示なので飛ばす
+    AskCard(PlayerId, &'a AskCardTag, Vec<&'a CardInstance<'a>>), // 次のStepはFocusした状態で
+    AskOptional(PlayerId, &'a AskOptionTag), // 答えがNoだったらそのスタックフレームをスキップ
+    SkipContinue,                            // 不可能な指示なので飛ばす
     End,
+}
+
+#[derive(Clone)]
+struct AskOptionTag {
+    tag: String,
+    localized_prompt: String,
+    default: Option<bool>,
+}
+
+#[derive(Clone)]
+struct AskCardTag {
+    tag: String,
+    localized_prompt: String,
 }
 
 mod player_util {
@@ -216,43 +242,88 @@ mod player_util {
         }
     }
 }
+impl Game<'_> {
+    fn resolve_selector<'a>(
+        &self,
+        target: &'a Player,
+        selector: &'a CardSelector,
+    ) -> Vec<&'a CardInstance<'a>> {
+        use {CardSelector, Zone::*};
+        panic!()
+    }
 
-fn step(game: &mut Game) -> EffectStepResult {
-    use {CardEffect::*, EffectStepResult::*, Zone::*};
+    fn step(&self) -> (Game, EffectStepResult) {
+        use {CardEffect::*, EffectStepResult::*, Zone::*};
 
-    let Some(frame) = game.stack.last_mut() else {
-        return EffectStepResult::End;
-    };
+        let mut game = self.clone();
 
-    let Some(effect) = frame.effect_queue.pop_front() else {
-        game.stack.pop();
-        return EffectStepResult::Continue;
-    };
+        let Some(mut frame) = game.stack.pop() else {
+            return (game, EffectStepResult::End);
+        };
 
-    match effect {
-        Noop => Continue,
-        Sequence(effects) => {
-            frame.effect_queue.extend(effects.into_iter());
-            Continue
-        }
-        AtomicSequence(effects) => {
-            game.stack.push(EffectStackFrame {
-                player: frame.player,
-                target: frame.target,
-                effect_queue: effects.into_iter().collect(),
-                focus: frame.focus,
-                cause: frame.cause,
-                atomic: true,
-            });
-            Continue
-        }
-        _ => SkipContinue,
+        let Some(effect) = frame.effect_queue.clone().pop_front() else {
+            game.stack.pop();
+            return (game, EffectStepResult::Continue);
+        };
+
+        let result = match effect {
+            Noop => Continue,
+            Sequence(effects) => {
+                frame.effect_queue.extend(effects.into_iter());
+                Continue
+            }
+            AtomicSequence(effects) => {
+                let newframe = EffectStackFrame {
+                    player: frame.player,
+                    target: frame.target,
+                    effect_queue: effects.into_iter().collect(),
+                    focus: frame.focus.clone(),
+                    cause: frame.cause,
+                    atomic: true,
+                };
+                game.stack.push(frame);
+                game.stack.push(newframe);
+                return (game, Continue);
+            }
+            Optional(prompt, effect) => {
+                let targetid = frame.target.id;
+                let newframe = EffectStackFrame {
+                    player: frame.player,
+                    target: frame.target,
+                    effect_queue: VecDeque::from(vec![&**effect]),
+                    focus: frame.focus.clone(),
+                    cause: frame.cause,
+                    atomic: true,
+                };
+                game.stack.push(frame);
+                game.stack.push(newframe);
+                return (game, AskOptional(targetid, prompt));
+            }
+            Select(prompt, n, selector, effect) => {
+                let targetid = frame.target.id;
+                let newframe = EffectStackFrame {
+                    player: frame.player,
+                    target: frame.target,
+                    effect_queue: VecDeque::from(vec![&**effect]),
+                    focus: frame.focus.clone(),
+                    cause: frame.cause,
+                    atomic: true,
+                };
+                game.stack.push(frame);
+                game.stack.push(newframe);
+                return (game, AskCard(targetid, prompt, vec![]));
+            }
+            _ => SkipContinue,
+        };
+
+        game.stack.push(frame);
+        (game, result)
     }
 }
 
 mod card_util {
 
-    use crate::{CardType::*, EffectTrigger::*, Number::*, *};
+    use crate::{CardNameSelector::Any, CardType::*, EffectTrigger::*, Number::*, *};
 
     pub fn vanilla_effect(draw: i32, action: i32, buy: i32, coin: i32) -> CardEffect {
         CardEffect::Sequence(vec![
@@ -351,11 +422,38 @@ mod card_util {
     }
 
     pub fn focused() -> CardSelector {
-        CardSelector::ByZone(Zone::Focused)
+        CardSelector {
+            name: Any,
+            zone: vec![Zone::Focused],
+        }
     }
 
     pub fn hand() -> CardSelector {
-        CardSelector::ByZone(Zone::Hand)
+        CardSelector {
+            name: Any,
+            zone: vec![Zone::Hand],
+        }
+    }
+
+    pub fn discard() -> CardSelector {
+        CardSelector {
+            name: Any,
+            zone: vec![Zone::Discard],
+        }
+    }
+
+    pub fn all_my_cards() -> CardSelector {
+        CardSelector {
+            name: Any,
+            zone: vec![Zone::AllMyCards],
+        }
+    }
+
+    pub fn in_zone(zone: Zone) -> CardSelector {
+        CardSelector {
+            name: Any,
+            zone: vec![zone],
+        }
     }
 
     pub fn upto(n: i32) -> Number {
@@ -394,7 +492,8 @@ mod expansions {
         use std::vec;
 
         use crate::{
-            card_util::*, CardEffect::*, CardType::*, EffectCond::*, EffectTrigger::*, Number::*, *,
+            card_util::*, CardEffect::*, CardNameSelector::Any, CardType::*, EffectCond::*,
+            EffectTrigger::*, Number::*, *,
         };
 
         /* ドミニオン 基本セット（第2版）
@@ -437,8 +536,11 @@ mod expansions {
                 Sequence(vec![
                     PlusAction(Constant(1)),
                     SelectAny(
-                        "捨て札にするカードを選んでください".to_owned(),
-                        CardSelector::ByZone(Zone::Hand),
+                        AskCardTag {
+                            tag: "cellar".to_owned(),
+                            localized_prompt: "捨て札にするカードを選んでください".to_owned(),
+                        },
+                        hand(),
                         Box::new(Sequence(vec![
                             PlusDraw(CountCard(focused())),
                             DiscardCard(focused()),
@@ -455,7 +557,7 @@ mod expansions {
                 "礼拝堂",
                 2,
                 false,
-                TrashSelect(upto(4), CardSelector::ByZone(Zone::Hand), Box::new(Noop)),
+                TrashSelect(upto(4), hand(), Box::new(Noop)),
             )
         }
 
@@ -488,13 +590,17 @@ mod expansions {
                         Constant(1),
                         Box::new(FocusAll(
                             // アクションだったら
-                            CardSelector::CardAnd(vec![
-                                CardSelector::ByZone(Zone::Focused),
-                                CardSelector::ByName(CardNameSelector::HasType(Action)),
-                            ]),
+                            CardSelector {
+                                name: CardNameSelector::HasType(Action),
+                                zone: vec![Zone::Focused],
+                            },
                             // 使ってもよい
                             Box::new(Optional(
-                                "アクションを使用しますか？".to_owned(),
+                                AskOptionTag {
+                                    tag: "chancellor".to_owned(),
+                                    localized_prompt: "このカードを使用しますか？".to_owned(),
+                                    default: Some(true),
+                                },
                                 Box::new(Sequence(vec![
                                     UseCard(focused()),
                                     DiscardCard(focused()),
@@ -533,18 +639,14 @@ mod expansions {
                         CardPlayed,
                         Sequence(vec![If(
                             Eq(
-                                CountCard(CardSelector::CardAnd(vec![
-                                    CardSelector::ByZone(Zone::Focused),
-                                    CardSelector::ByName(CardNameSelector::Exact(
-                                        "Silver".to_owned(),
-                                    )),
-                                ])),
-                                CountCard(CardSelector::CardAnd(vec![
-                                    CardSelector::ByZone(Zone::Focused),
-                                    CardSelector::ByName(CardNameSelector::Exact(
-                                        "Silver".to_owned(),
-                                    )),
-                                ])),
+                                CountCard(CardSelector {
+                                    name: CardNameSelector::Exact("Silver".to_owned()),
+                                    zone: vec![Zone::Focused],
+                                }),
+                                CountCard(CardSelector {
+                                    name: CardNameSelector::Exact("Silver".to_owned()),
+                                    zone: vec![Zone::Play],
+                                }),
                             ),
                             Box::new(PlusCoin(Constant(1))),
                         )]),
@@ -565,8 +667,11 @@ mod expansions {
                     PlusDraw(Constant(1)),
                     PlusAction(Constant(1)),
                     SelectAny(
-                        "デッキトップに置くカードを選んでください".to_owned(),
-                        CardSelector::ByZone(Zone::Discard),
+                        AskCardTag {
+                            tag: "harbinger".to_owned(),
+                            localized_prompt: "デッキトップに置くカードを選んでください".to_owned(),
+                        },
+                        discard(),
                         Box::new(MoveCard(focused(), Zone::DeckTop)),
                     ),
                 ]),
@@ -609,13 +714,17 @@ mod expansions {
                 4,
                 false,
                 Optional(
-                    "財宝を破棄しますか？".to_owned(),
+                    AskOptionTag {
+                        tag: "moneylender".to_owned(),
+                        localized_prompt: "銅貨を破棄しますか？".to_owned(),
+                        default: Some(true),
+                    },
                     Box::new(TrashSelect(
                         Constant(1),
-                        CardSelector::CardAnd(vec![
-                            hand(),
-                            CardSelector::ByName(CardNameSelector::Exact("Copper".to_owned())),
-                        ]),
+                        CardSelector {
+                            name: CardNameSelector::Exact("Copper".to_owned()),
+                            zone: vec![Zone::Hand],
+                        },
                         Box::new(AtomicSequence(vec![
                             TrashCard(focused()),
                             PlusCoin(Constant(3)),
@@ -633,12 +742,15 @@ mod expansions {
                 4,
                 false,
                 Select(
-                    "使用するカードを選んでください".to_owned(),
+                    AskCardTag {
+                        tag: "throne_room".to_owned(),
+                        localized_prompt: "使用するカードを選んでください".to_owned(),
+                    },
                     Constant(1),
-                    CardSelector::CardAnd(vec![
-                        hand(),
-                        CardSelector::ByName(CardNameSelector::HasType(Action)),
-                    ]),
+                    CardSelector {
+                        name: CardNameSelector::HasType(Action),
+                        zone: vec![Zone::Hand],
+                    },
                     Box::new(Sequence(vec![UseCard(focused()), UseCard(focused())])),
                 ),
             )
@@ -691,12 +803,16 @@ mod expansions {
                 Sequence(vec![
                     PlusCoin(Constant(2)),
                     AttackAllOpponents(Box::new(Select(
-                        "デッキトップに置くカードを選んでください".to_owned(),
+                        AskCardTag {
+                            tag: "bureaucrat".to_owned(),
+                            localized_prompt: "デッキトップに置く勝利点カードを選んでください"
+                                .to_owned(),
+                        },
                         Constant(1),
-                        CardSelector::CardAnd(vec![
-                            hand(),
-                            CardSelector::ByName(CardNameSelector::HasType(Victory)),
-                        ]),
+                        CardSelector {
+                            name: CardNameSelector::HasType(Victory),
+                            zone: vec![Zone::Hand],
+                        },
                         Box::new(MoveCard(focused(), Zone::DeckTop)),
                     ))),
                 ]),
@@ -709,10 +825,7 @@ mod expansions {
                 name: "Gardens".to_owned(),
                 localized_name: "庭園".to_owned(),
                 cost: 4,
-                vp: Div(
-                    Box::new(CountCard(CardSelector::ByZone(Zone::AllMyCards))),
-                    Box::new(Constant(10)),
-                ),
+                vp: Div(Box::new(CountCard(all_my_cards())), Box::new(Constant(10))),
                 rules: vec![],
                 types: vec![Victory],
             }
@@ -738,16 +851,23 @@ mod expansions {
                         Box::new(Sequence(vec![
                             MoveCard(focused(), Zone::Pending),
                             SelectAny(
-                                "破棄するカードを選んでください".to_owned(),
-                                CardSelector::ByZone(Zone::Pending),
+                                AskCardTag {
+                                    tag: "sentry_trash".to_owned(),
+                                    localized_prompt: "破棄するカードを選択してください".to_owned(),
+                                },
+                                in_zone(Zone::Pending),
                                 Box::new(TrashCard(focused())),
                             ),
                             SelectAny(
-                                "捨てるカードを選んでください".to_owned(),
-                                CardSelector::ByZone(Zone::Pending),
+                                AskCardTag {
+                                    tag: "sentry_discard".to_owned(),
+                                    localized_prompt: "捨て札にするカードを選択してください"
+                                        .to_owned(),
+                                },
+                                in_zone(Zone::Pending),
                                 Box::new(DiscardCard(focused())),
                             ),
-                            MoveCard(CardSelector::ByZone(Zone::Pending), Zone::DeckTop),
+                            MoveCard(in_zone(Zone::Pending), Zone::DeckTop),
                         ])),
                     ),
                 ]),
@@ -783,13 +903,17 @@ mod expansions {
                 5,
                 false,
                 Optional(
-                    "財宝を破棄しますか？".to_owned(),
+                    AskOptionTag {
+                        tag: "mine".to_owned(),
+                        localized_prompt: "財宝を破棄しますか？".to_owned(),
+                        default: Some(true),
+                    },
                     Box::new(TrashSelect(
                         Constant(1),
-                        CardSelector::CardAnd(vec![
-                            hand(),
-                            CardSelector::ByName(CardNameSelector::HasType(Treasure)),
-                        ]),
+                        CardSelector {
+                            name: CardNameSelector::HasType(Treasure),
+                            zone: vec![Zone::Hand],
+                        },
                         Box::new(AtomicSequence(vec![
                             TrashCard(focused()),
                             GainCard(CardNameSelector::NameAnd(vec![
@@ -823,13 +947,10 @@ mod expansions {
                             // 手札==7 or 手札+捨て札+デッキ <= 6
                             Eq(CountCard(hand()), Constant(7)),
                             Leq(
-                                Plus(
-                                    Box::new(CountCard(hand())),
-                                    Box::new(Plus(
-                                        Box::new(CountCard(CardSelector::ByZone(Zone::Discard))),
-                                        Box::new(CountCard(CardSelector::ByZone(Zone::Deck))),
-                                    )),
-                                ),
+                                CountCard(CardSelector {
+                                    name: Any,
+                                    zone: vec![Zone::Discard, Zone::Deck, Zone::Hand],
+                                }),
                                 Constant(6),
                             ),
                         ]),
@@ -838,14 +959,19 @@ mod expansions {
                             Box::new(Sequence(vec![
                                 If(
                                     Eq(
-                                        CountCard(CardSelector::ByName(CardNameSelector::HasType(
-                                            Action,
-                                        ))),
+                                        CountCard(CardSelector {
+                                            name: CardNameSelector::HasType(Action),
+                                            zone: vec![Zone::Focused],
+                                        }),
                                         Constant(1),
                                     ),
                                     Box::new(SelectAny(
-                                        "加えるか脇に避けるか選んでください".to_owned(),
-                                        CardSelector::ByZone(Zone::DeckTop),
+                                        AskCardTag {
+                                            tag: "library".to_owned(),
+                                            localized_prompt: "このカードを脇に避けますか？"
+                                                .to_owned(),
+                                        },
+                                        focused(),
                                         Box::new(Sequence(vec![MoveCard(
                                             focused(),
                                             Zone::Pending,
@@ -856,7 +982,7 @@ mod expansions {
                             ])),
                         )])),
                     ),
-                    DiscardCard(CardSelector::ByZone(Zone::Pending)),
+                    DiscardCard(in_zone(Zone::Pending)),
                 ]),
             )
         }
@@ -874,10 +1000,10 @@ mod expansions {
                         Constant(2),
                         Box::new(TrashSelect(
                             Constant(1),
-                            CardSelector::CardAnd(vec![
-                                CardSelector::ByZone(Zone::Focused),
-                                CardSelector::ByName(CardNameSelector::HasType(Treasure)),
-                            ]),
+                            CardSelector {
+                                name: CardNameSelector::HasType(Treasure),
+                                zone: vec![Zone::Focused],
+                            },
                             Box::new(TrashCard(focused())),
                         )),
                     ))),
@@ -911,13 +1037,80 @@ mod expansions {
                 Sequence(vec![
                     GainCardToHand(CardNameSelector::Cost(Box::new(upto(5)))),
                     Select(
-                        "デッキトップに置くカードを選んでください".to_owned(),
+                        AskCardTag {
+                            tag: "artisan".to_owned(),
+                            localized_prompt: "デッキトップに置くカードを選んでください".to_owned(),
+                        },
                         Constant(1),
                         hand(),
                         Box::new(MoveCard(focused(), Zone::DeckTop)),
                     ),
                 ]),
             )
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    mod selector_resolver {
+        use crate::{
+            card_util::*, expansions::basic_supply::*, CardId, CardNameSelector, CardSelector,
+            CardSelector, Game, Player, PlayerId, Zone::*,
+        };
+
+        fn setup<'a>() -> Game<'a> {
+            let p0 = Player {
+                id: PlayerId { id: 0 },
+                name: "Alice".to_owned(),
+                deck: vec![],
+                hand: vec![],
+                play: vec![],
+                pending: vec![],
+                discard: vec![],
+            };
+
+            let p1 = Player {
+                id: PlayerId { id: 1 },
+                name: "Bob".to_owned(),
+                deck: vec![],
+                hand: vec![],
+                play: vec![],
+                pending: vec![],
+                discard: vec![],
+            };
+
+            Game {
+                players: vec![p0, p1],
+                supply: vec![],
+                trash: vec![],
+                turn: 0,
+                stack: vec![],
+            }
+        }
+
+        #[test]
+        fn byname_exact() {
+            let mut game = setup();
+            let mut alice = &mut game.players[0];
+            alice.hand.push(CardInstance {
+                id: CardId { id: 0 },
+                card: copper(),
+            });
+            alice.hand.push(CardInstance {
+                id: CardId { id: 1 },
+                card: copper(),
+            });
+            alice.deck.push(CardInstance {
+                id: CardId { id: 2 },
+                card: copper(),
+            });
+            let selector = CardSelector {
+                name: CardNameSelector::Exact("Copper".to_owned()),
+                zone: vec![Hand],
+            };
+            let result = game.resolve_selector(alice, &selector);
+            assert_eq!(result.len(), 2);
         }
     }
 }
