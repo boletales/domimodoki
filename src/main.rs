@@ -1,3 +1,4 @@
+use core::panic;
 use std::collections::{vec_deque, VecDeque};
 
 fn main() {
@@ -13,19 +14,20 @@ struct Player<'a> {
     hand: Vec<CardInstance<'a>>,
     play: Vec<CardInstance<'a>>,
     pending: Vec<CardInstance<'a>>,
+    revealed: Vec<CardInstance<'a>>,
     discard: Vec<CardInstance<'a>>,
     id: PlayerId,
 }
 
 #[derive(Clone, Copy)]
 struct PlayerId {
-    id: i32,
+    id: usize,
 }
 
 struct Card {
     name: String,
     localized_name: String,
-    cost: i32,
+    cost: Number,
     vp: Number,
     rules: Vec<(EffectTrigger, CardEffect)>,
     types: Vec<CardType>,
@@ -39,10 +41,10 @@ struct CardInstance<'a> {
 
 #[derive(Clone, Copy)]
 struct CardId {
-    id: i32,
+    id: usize,
 }
 
-#[derive(Clone)]
+#[derive(Clone, PartialEq, Eq)]
 enum CardType {
     Action,
     Treasure,
@@ -70,7 +72,6 @@ enum Number {
     CountCard(CardSelector),
     CountCost(CardSelector),
     CountEmptyPiles,
-    UpTo(Box<Number>),
     Plus(Box<Number>, Box<Number>),
     Minus(Box<Number>, Box<Number>),
     Times(Box<Number>, Box<Number>), // 乗算
@@ -103,7 +104,9 @@ enum CardEffect {
     FocusAll(CardSelector, Box<CardEffect>),
 
     TrashSelect(Number, CardSelector, Box<CardEffect>), // Select亜種 手札から廃棄
-    DiscardSelect(Number, CardSelector, Box<CardEffect>), // Select亜種 手札を捨てる
+    TrashSelectUpTo(Number, CardSelector, Box<CardEffect>), // Select亜種 手札から廃棄（最大枚数指定）
+    DiscardSelect(Number, CardSelector, Box<CardEffect>),   // Select亜種 手札を捨てる
+    DiscardSelectUpTo(Number, CardSelector, Box<CardEffect>), // Select亜種 手札を捨てる（最大枚数指定）
 
     // デッキトップ公開・Focus
     RevealTop(Number, Box<CardEffect>),
@@ -139,6 +142,7 @@ enum Zone {
     Discard,
     Play,
     Pending,
+    Revealed,
 
     // 以下は仮想的なゾーン
     DeckTop, // デッキの一番上。配置対象としてもよい
@@ -155,6 +159,7 @@ enum CardNameSelector {
     NameNot(Box<CardNameSelector>),
     HasType(CardType),
     Cost(Box<Number>),
+    CostUpTo(Box<Number>),
     Any,
 }
 
@@ -174,7 +179,7 @@ enum TurnPhase {
 #[derive(Clone)]
 struct Game<'a> {
     players: Vec<Player<'a>>,
-    supply: Vec<(&'a Card, i32)>,
+    supply: Vec<Vec<(CardInstance<'a>, i32)>>,
     trash: Vec<CardInstance<'a>>,
     turn: i32,
     stack: Vec<EffectStackFrame<'a>>,
@@ -242,14 +247,84 @@ mod player_util {
         }
     }
 }
-impl Game<'_> {
-    fn resolve_selector<'a>(
+impl<'a> Game<'a> {
+    fn resolve_number(&self, n: &Number) -> i32 {
+        use Number::*;
+        match n {
+            Constant(n) => *n,
+            CountCard(selector) => self.resolve_selector(&self.players[0], selector).len() as i32,
+            CountCost(selector) => self
+                .resolve_selector(&self.players[0], selector)
+                .iter()
+                .map(|c| self.resolve_number(&c.card.cost))
+                .sum(),
+            CountEmptyPiles => self.supply.iter().filter(|pile| pile.is_empty()).count() as i32,
+            Plus(a, b) => self.resolve_number(a) + self.resolve_number(b),
+            Minus(a, b) => self.resolve_number(a) - self.resolve_number(b),
+            Times(a, b) => self.resolve_number(a) * self.resolve_number(b),
+            Div(a, b) => self.resolve_number(a) / self.resolve_number(b),
+            Mod(a, b) => self.resolve_number(a) % self.resolve_number(b),
+        }
+    }
+
+    fn resolve_name(&self, selector: &CardNameSelector, card: &Card) -> bool {
+        use CardNameSelector::*;
+        match selector {
+            Exact(name) => card.name == *name,
+            NameAnd(selectors) => selectors.iter().all(|s| self.resolve_name(s, card)),
+            NameOr(selectors) => selectors.iter().any(|s| self.resolve_name(s, card)),
+            NameNot(selector) => !self.resolve_name(selector, card),
+            HasType(t) => card.types.contains(t),
+            Cost(n) => self.resolve_number(n) == self.resolve_number(&card.cost),
+            CostUpTo(n) => self.resolve_number(n) >= self.resolve_number(&card.cost),
+            Any => true,
+        }
+    }
+
+    fn resolve_zone(&self, player: &'a Player, zone: &Zone) -> Vec<&'a CardInstance<'a>> {
+        match zone {
+            Zone::Deck => player.deck.iter().collect(),
+            Zone::Hand => player.hand.iter().collect(),
+            Zone::Discard => player.discard.iter().collect(),
+            Zone::Play => player.play.iter().collect(),
+            Zone::Pending => player.pending.iter().collect(),
+            Zone::Revealed => player.revealed.iter().collect(),
+            Zone::DeckTop => player.deck.last().into_iter().collect(),
+            Zone::AllMyCards => [
+                &player.deck,
+                &player.hand,
+                &player.discard,
+                &player.play,
+                &player.pending,
+                &player.revealed,
+            ]
+            .iter()
+            .flat_map(|v| v.iter())
+            .collect(),
+            Zone::Focused => self
+                .stack
+                .last()
+                .map_or(vec![], |frame| frame.focus.clone()),
+            Zone::Itself => self
+                .stack
+                .last()
+                .map_or(vec![], |frame| frame.cause.into_iter().collect()),
+        }
+    }
+
+    fn resolve_selector(
         &self,
         target: &'a Player,
         selector: &'a CardSelector,
     ) -> Vec<&'a CardInstance<'a>> {
         use {CardSelector, Zone::*};
-        panic!()
+
+        selector
+            .zone
+            .iter()
+            .flat_map(|zone| self.resolve_zone(target, zone))
+            .filter(|c| self.resolve_name(&selector.name, c.card))
+            .collect()
     }
 
     fn step(&self) -> (Game, EffectStepResult) {
@@ -346,7 +421,7 @@ mod card_util {
         Card {
             name: name.to_owned(),
             localized_name: localized_name.to_owned(),
-            cost,
+            cost: Constant(cost),
             vp: Constant(0),
             rules: vec![(PlayAsAction, vanilla_effect(draw, action, buy, coin))],
             types: vec![Action],
@@ -357,7 +432,7 @@ mod card_util {
         Card {
             name: name.to_owned(),
             localized_name: localized_name.to_owned(),
-            cost,
+            cost: Constant(cost),
             vp: Constant(0),
             rules: vec![(PlayAsTreasure, vanilla_effect(0, 0, 0, coin))],
             types: vec![Treasure],
@@ -368,7 +443,7 @@ mod card_util {
         Card {
             name: name.to_owned(),
             localized_name: localized_name.to_owned(),
-            cost,
+            cost: Constant(cost),
             vp: Constant(vp),
             rules: vec![],
             types: vec![Victory],
@@ -378,7 +453,7 @@ mod card_util {
         Card {
             name: "Curse".to_owned(),
             localized_name: "呪い".to_owned(),
-            cost: 0,
+            cost: Constant(0),
             vp: Constant(-1),
             rules: vec![],
             types: vec![Curse],
@@ -394,7 +469,7 @@ mod card_util {
         Card {
             name: name.to_owned(),
             localized_name: localized_name.to_owned(),
-            cost,
+            cost: Constant(cost),
             vp: Constant(0),
             rules,
             types,
@@ -455,16 +530,13 @@ mod card_util {
             zone: vec![zone],
         }
     }
-
-    pub fn upto(n: i32) -> Number {
-        Number::UpTo(Box::new(Constant(n)))
-    }
 }
 
 mod expansions {
     pub mod basic_supply {
         use crate::*;
         use card_util::*;
+        use std::collections::HashMap;
         // 基本カード
         pub fn copper() -> Card {
             vanilla_treasure_card("Copper", "銅貨", 0, 1)
@@ -487,8 +559,24 @@ mod expansions {
         pub fn curse() -> Card {
             vanilla_curse_card()
         }
+
+        pub fn basic_supply() -> HashMap<String, Card> {
+            vec![
+                copper(),
+                silver(),
+                gold(),
+                estate(),
+                duchy(),
+                province(),
+                curse(),
+            ]
+            .into_iter()
+            .map(|c| (c.name.clone(), c))
+            .collect()
+        }
     }
     pub mod base {
+        use std::collections::HashMap;
         use std::vec;
 
         use crate::{
@@ -557,7 +645,7 @@ mod expansions {
                 "礼拝堂",
                 2,
                 false,
-                TrashSelect(upto(4), hand(), Box::new(Noop)),
+                TrashSelectUpTo(Constant(4), hand(), Box::new(Noop)),
             )
         }
 
@@ -566,7 +654,7 @@ mod expansions {
             Card {
                 name: "Moat".to_owned(),
                 localized_name: "堀".to_owned(),
-                cost: 2,
+                cost: Constant(2),
                 vp: Constant(0),
                 rules: vec![
                     (PlayAsAction, Sequence(vec![PlusDraw(Constant(2))])),
@@ -619,7 +707,7 @@ mod expansions {
                 "工房",
                 3,
                 false,
-                GainCard(CardNameSelector::Cost(Box::new(upto(4)))),
+                GainCard(CardNameSelector::CostUpTo(Box::new(Constant(4)))),
             )
         }
 
@@ -824,7 +912,7 @@ mod expansions {
             Card {
                 name: "Gardens".to_owned(),
                 localized_name: "庭園".to_owned(),
-                cost: 4,
+                cost: Constant(4),
                 vp: Div(Box::new(CountCard(all_my_cards())), Box::new(Constant(10))),
                 rules: vec![],
                 types: vec![Victory],
@@ -918,10 +1006,10 @@ mod expansions {
                             TrashCard(focused()),
                             GainCard(CardNameSelector::NameAnd(vec![
                                 CardNameSelector::HasType(Treasure),
-                                CardNameSelector::Cost(Box::new(UpTo(Box::new(Plus(
+                                CardNameSelector::CostUpTo(Box::new(Plus(
                                     Box::new(CountCost(focused())),
                                     Box::new(Constant(3)),
-                                ))))),
+                                ))),
                             ])),
                         ])),
                     )),
@@ -1035,7 +1123,7 @@ mod expansions {
                 6,
                 false,
                 Sequence(vec![
-                    GainCardToHand(CardNameSelector::Cost(Box::new(upto(5)))),
+                    GainCardToHand(CardNameSelector::CostUpTo(Box::new(Constant(5)))),
                     Select(
                         AskCardTag {
                             tag: "artisan".to_owned(),
@@ -1048,18 +1136,49 @@ mod expansions {
                 ]),
             )
         }
+
+        pub fn base_set() -> HashMap<String, Card> {
+            vec![
+                cellar(),
+                chapel(),
+                moat(),
+                chancellor(),
+                workshop(),
+                merchant(),
+                harbinger(),
+                village(),
+                remodel(),
+                smithy(),
+                moneylender(),
+                throne_room(),
+                poacher(),
+                militia(),
+                bureaucrat(),
+                gardens(),
+                market(),
+                sentry(),
+                council_room(),
+                laboratory(),
+                mine(),
+                festival(),
+                library(),
+                bandit(),
+                witch(),
+                artisan(),
+            ]
+            .into_iter()
+            .map(|c| (c.name.clone(), c))
+            .collect()
+        }
     }
 }
 
 #[cfg(test)]
 mod tests {
-    mod selector_resolver {
-        use crate::{
-            card_util::*, expansions::basic_supply::*, CardId, CardNameSelector, CardSelector,
-            CardSelector, Game, Player, PlayerId, Zone::*,
-        };
+    mod resolvers {
+        use crate::{Game, Player, PlayerId};
 
-        fn setup<'a>() -> Game<'a> {
+        pub fn setup<'a>() -> Game<'a> {
             let p0 = Player {
                 id: PlayerId { id: 0 },
                 name: "Alice".to_owned(),
@@ -1067,6 +1186,7 @@ mod tests {
                 hand: vec![],
                 play: vec![],
                 pending: vec![],
+                revealed: vec![],
                 discard: vec![],
             };
 
@@ -1077,6 +1197,7 @@ mod tests {
                 hand: vec![],
                 play: vec![],
                 pending: vec![],
+                revealed: vec![],
                 discard: vec![],
             };
 
@@ -1088,29 +1209,246 @@ mod tests {
                 stack: vec![],
             }
         }
-
-        #[test]
-        fn byname_exact() {
-            let mut game = setup();
-            let mut alice = &mut game.players[0];
-            alice.hand.push(CardInstance {
-                id: CardId { id: 0 },
-                card: copper(),
-            });
-            alice.hand.push(CardInstance {
-                id: CardId { id: 1 },
-                card: copper(),
-            });
-            alice.deck.push(CardInstance {
-                id: CardId { id: 2 },
-                card: copper(),
-            });
-            let selector = CardSelector {
-                name: CardNameSelector::Exact("Copper".to_owned()),
-                zone: vec![Hand],
+        mod cardname {
+            use crate::{
+                expansions::base::*, expansions::basic_supply::*, tests::resolvers::setup, CardId,
+                CardInstance, CardNameSelector, CardSelector, CardType::*, Game, Number::*, Player,
+                PlayerId, Zone::*,
             };
-            let result = game.resolve_selector(alice, &selector);
-            assert_eq!(result.len(), 2);
+            #[test]
+            fn cardname_exact() {
+                let mut game = setup();
+                let copper = copper();
+                let alice = &mut game.players[0];
+                let hand = [&copper, &copper, &copper];
+                for (i, card) in hand.iter().enumerate() {
+                    alice.hand.push(CardInstance {
+                        id: CardId { id: i },
+                        card,
+                    });
+                }
+                let selector = CardSelector {
+                    name: CardNameSelector::Exact("Copper".to_owned()),
+                    zone: vec![Hand],
+                };
+                let alice = &game.players[0];
+                let result = game.resolve_selector(alice, &selector);
+                assert_eq!(result.len(), 2);
+            }
+
+            #[test]
+            fn cardname_cost() {
+                let mut game = setup();
+                let copper = copper();
+                let silver = silver();
+                let gold = gold();
+                let alice = &mut game.players[0];
+                let hand = [&copper, &silver, &silver, &gold];
+                for (i, card) in hand.iter().enumerate() {
+                    alice.hand.push(CardInstance {
+                        id: CardId { id: i },
+                        card,
+                    });
+                }
+                let selector = CardSelector {
+                    name: CardNameSelector::Cost(Box::new(Constant(3))),
+                    zone: vec![Hand],
+                };
+                let alice = &game.players[0];
+                let result = game.resolve_selector(alice, &selector);
+                assert_eq!(result.len(), 2);
+            }
+
+            #[test]
+            fn cardname_costupto() {
+                let mut game = setup();
+                let copper = copper();
+                let silver = silver();
+                let gold = gold();
+                let alice = &mut game.players[0];
+                let hand = [&copper, &silver, &silver, &gold];
+                for (i, card) in hand.iter().enumerate() {
+                    alice.hand.push(CardInstance {
+                        id: CardId { id: i },
+                        card,
+                    });
+                }
+                let selector = CardSelector {
+                    name: CardNameSelector::CostUpTo(Box::new(Constant(3))),
+                    zone: vec![Hand],
+                };
+                let alice = &game.players[0];
+                let result = game.resolve_selector(alice, &selector);
+                assert_eq!(result.len(), 3);
+            }
+
+            #[test]
+            fn cardname_or() {
+                let mut game = setup();
+                let copper = copper();
+                let silver = silver();
+                let gold = gold();
+                let alice = &mut game.players[0];
+                let hand = [&copper, &silver, &gold];
+                for (i, card) in hand.iter().enumerate() {
+                    alice.hand.push(CardInstance {
+                        id: CardId { id: i },
+                        card,
+                    });
+                }
+                let selector = CardSelector {
+                    name: CardNameSelector::NameOr(vec![
+                        CardNameSelector::Exact("Copper".to_owned()),
+                        CardNameSelector::Exact("Silver".to_owned()),
+                    ]),
+                    zone: vec![Hand],
+                };
+                let alice = &game.players[0];
+                let result = game.resolve_selector(alice, &selector);
+                assert_eq!(result.len(), 2);
+            }
+
+            #[test]
+            fn cardname_type() {
+                let mut game = setup();
+                let copper = copper();
+                let silver = silver();
+                let gold = gold();
+                let moat = moat();
+                let bandit = bandit();
+
+                let alice = &mut game.players[0];
+                let hand = [&copper, &silver, &gold, &moat, &bandit];
+                for (i, card) in hand.iter().enumerate() {
+                    alice.hand.push(CardInstance {
+                        id: CardId { id: i },
+                        card,
+                    });
+                }
+                let selector_t = CardSelector {
+                    name: CardNameSelector::HasType(Treasure),
+                    zone: vec![Hand],
+                };
+                let selector_a = CardSelector {
+                    name: CardNameSelector::HasType(Action),
+                    zone: vec![Hand],
+                };
+                let selector_r = CardSelector {
+                    name: CardNameSelector::HasType(Reaction),
+                    zone: vec![Hand],
+                };
+                let alice = &game.players[0];
+                let result_t = game.resolve_selector(alice, &selector_t);
+                let result_a = game.resolve_selector(alice, &selector_a);
+                let result_r = game.resolve_selector(alice, &selector_r);
+                assert_eq!(result_t.len(), 3);
+                assert_eq!(result_a.len(), 2);
+                assert_eq!(result_r.len(), 1);
+            }
+
+            #[test]
+            fn cardname_any() {
+                let mut game = setup();
+                let copper = copper();
+                let silver = silver();
+                let gold = gold();
+                let moat = moat();
+                let bandit = bandit();
+
+                let alice = &mut game.players[0];
+                let hand = [&copper, &silver, &gold, &moat, &bandit];
+                for (i, card) in hand.iter().enumerate() {
+                    alice.hand.push(CardInstance {
+                        id: CardId { id: i },
+                        card,
+                    });
+                }
+                let selector = CardSelector {
+                    name: CardNameSelector::Any,
+                    zone: vec![Hand],
+                };
+                let alice = &game.players[0];
+                let result = game.resolve_selector(alice, &selector);
+                assert_eq!(result.len(), 5);
+            }
+        }
+        mod cardselector {
+            use std::vec;
+            use std::{collections::HashMap, hash::Hash};
+
+            use crate::{
+                expansions::{
+                    base::*,
+                    basic_supply::{self, *},
+                },
+                tests::resolvers::setup,
+                Card, CardId, CardInstance, CardNameSelector, CardSelector,
+                CardType::*,
+                Game,
+                Number::*,
+                Player, PlayerId,
+                Zone::*,
+            };
+
+            fn supply() -> HashMap<String, Card> {
+                let mut supply = basic_supply();
+                supply.extend(base_set());
+                supply
+            }
+
+            /*
+            手札：銅貨、銀貨、金貨、堀、山賊
+            山札：屋敷、民兵、役人、庭園、市場
+            捨て札：礼拝堂、前駆者、魔女、職人、鉱山
+            場札：地下貯蔵庫、密猟者、衛兵
+            処理中：商人、玉座の間
+             */
+            fn setup2<'a>(supply: &'a HashMap<String, Card>) -> Game<'a> {
+                let mut game = setup();
+                let alice = &mut game.players[0];
+                let mut cid = 0;
+                let hand = vec!["Copper", "Silver", "Gold", "Moat", "Bandit"];
+                let deck = vec!["Estate", "Militia", "Bureaucrat", "Gardens", "Market"];
+                let discard = vec!["Chapel", "Harbinger", "Witch", "Artisan", "Mine"];
+                let play = vec!["Cellar", "Poacher", "Sentry"];
+                let pending = vec!["Merchant", "Throne Room"];
+                for card in hand.iter() {
+                    alice.hand.push(CardInstance {
+                        id: CardId { id: cid },
+                        card: &supply[*card],
+                    });
+                    cid += 1;
+                }
+                for card in deck.iter() {
+                    alice.deck.push(CardInstance {
+                        id: CardId { id: cid },
+                        card: &supply[*card],
+                    });
+                    cid += 1;
+                }
+                for card in discard.iter() {
+                    alice.discard.push(CardInstance {
+                        id: CardId { id: cid },
+                        card: &supply[*card],
+                    });
+                    cid += 1;
+                }
+                for card in play.iter() {
+                    alice.play.push(CardInstance {
+                        id: CardId { id: cid },
+                        card: &supply[*card],
+                    });
+                    cid += 1;
+                }
+                for card in pending.iter() {
+                    alice.pending.push(CardInstance {
+                        id: CardId { id: cid },
+                        card: &supply[*card],
+                    });
+                    cid += 1;
+                }
+                game
+            }
         }
     }
 }
