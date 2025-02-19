@@ -38,9 +38,18 @@ struct Card {
 
 #[derive(Clone)]
 #[allow(dead_code)]
+enum CardAddress {
+    Supply(usize, usize),
+    PlayerOwned(PlayerId, Zone),
+    Trash,
+}
+
+#[derive(Clone)]
+#[allow(dead_code)]
 struct CardInstance<'a> {
     card: &'a Card,
     id: CardId,
+    address: CardAddress,
 }
 
 #[derive(Clone, Copy)]
@@ -1303,7 +1312,10 @@ mod tests {
             base::*,
             basic_supply::{self, *},
         },
-        Card, CardId, CardInstance, Game, Player, PlayerId,
+        Card,
+        CardAddress::*,
+        CardId, CardInstance, Game, Player, PlayerId,
+        Zone::*,
     };
 
     pub fn setup<'a>() -> Game<'a> {
@@ -1364,6 +1376,7 @@ mod tests {
             alice.hand.push(CardInstance {
                 id: CardId { id: cid },
                 card: &supply[*card],
+                address: PlayerOwned(alice.id, Hand),
             });
             cid += 1;
         }
@@ -1371,6 +1384,7 @@ mod tests {
             alice.deck.push(CardInstance {
                 id: CardId { id: cid },
                 card: &supply[*card],
+                address: PlayerOwned(alice.id, Deck),
             });
             cid += 1;
         }
@@ -1378,6 +1392,7 @@ mod tests {
             alice.discard.push(CardInstance {
                 id: CardId { id: cid },
                 card: &supply[*card],
+                address: PlayerOwned(alice.id, Discard),
             });
             cid += 1;
         }
@@ -1385,6 +1400,7 @@ mod tests {
             alice.play.push(CardInstance {
                 id: CardId { id: cid },
                 card: &supply[*card],
+                address: PlayerOwned(alice.id, Play),
             });
             cid += 1;
         }
@@ -1392,6 +1408,7 @@ mod tests {
             alice.pending.push(CardInstance {
                 id: CardId { id: cid },
                 card: &supply[*card],
+                address: PlayerOwned(alice.id, Pending),
             });
             cid += 1;
         }
@@ -1400,8 +1417,8 @@ mod tests {
     mod resolvers {
         mod cardname {
             use crate::{
-                expansions::base::*, expansions::basic_supply::*, tests::setup, CardId,
-                CardInstance, CardNameSelector, CardSelector, CardType::*, Game, Number::*,
+                expansions::base::*, expansions::basic_supply::*, tests::setup, CardAddress::*,
+                CardId, CardInstance, CardNameSelector, CardSelector, CardType::*, Game, Number::*,
                 NumberRange::*, Player, PlayerId, Zone::*,
             };
             #[test]
@@ -1414,6 +1431,7 @@ mod tests {
                     alice.hand.push(CardInstance {
                         id: CardId { id: i },
                         card,
+                        address: PlayerOwned(alice.id, Hand),
                     });
                 }
                 let selector = CardSelector {
@@ -1437,6 +1455,7 @@ mod tests {
                     alice.hand.push(CardInstance {
                         id: CardId { id: i },
                         card,
+                        address: PlayerOwned(alice.id, Hand),
                     });
                 }
                 let selector = CardSelector {
@@ -1460,6 +1479,7 @@ mod tests {
                     alice.hand.push(CardInstance {
                         id: CardId { id: i },
                         card,
+                        address: PlayerOwned(alice.id, Hand),
                     });
                 }
                 let selector = CardSelector {
@@ -1483,6 +1503,7 @@ mod tests {
                     alice.hand.push(CardInstance {
                         id: CardId { id: i },
                         card,
+                        address: PlayerOwned(alice.id, Hand),
                     });
                 }
                 let selector = CardSelector {
@@ -1512,6 +1533,7 @@ mod tests {
                     alice.hand.push(CardInstance {
                         id: CardId { id: i },
                         card,
+                        address: PlayerOwned(alice.id, Hand),
                     });
                 }
                 let selector_t = CardSelector {
@@ -1550,6 +1572,7 @@ mod tests {
                     alice.hand.push(CardInstance {
                         id: CardId { id: i },
                         card,
+                        address: PlayerOwned(alice.id, Hand),
                     });
                 }
                 let selector = CardSelector {
@@ -1616,6 +1639,7 @@ mod tests {
                 basic_supply::{self, *},
             },
             tests::{setup2, supply},
+            CardAddress::*,
             CardNameSelector::*,
             CardSelector,
             Number::*,
@@ -1636,6 +1660,7 @@ mod tests {
                 alice.deck.push(crate::CardInstance {
                     id: crate::CardId { id: i },
                     card: &supply["Copper"],
+                    address: PlayerOwned(alice.id, Deck),
                 });
             }
 
@@ -1648,6 +1673,7 @@ mod tests {
                 alice.deck.push(crate::CardInstance {
                     id: crate::CardId { id: i },
                     card: &supply["Copper"],
+                    address: PlayerOwned(alice.id, Deck),
                 });
             }
 
