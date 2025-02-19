@@ -97,6 +97,19 @@ enum NumberRange<N> {
     AnyNumber,
 }
 
+impl NumberRange<i32> {
+    const fn contains(&self, n: i32) -> bool {
+        use NumberRange::*;
+        match self {
+            Exact(m) => n == *m,
+            UpTo(m) => n <= *m,
+            AtLeast(m) => n >= *m,
+            Range(a, b) => n >= *a && n <= *b,
+            AnyNumber => true,
+        }
+    }
+}
+
 #[derive(Clone)]
 #[allow(dead_code)]
 enum EffectCond {
@@ -184,8 +197,7 @@ enum CardNameSelector {
     NameOr(Vec<CardNameSelector>),
     NameNot(Box<CardNameSelector>),
     HasType(CardType),
-    Cost(Box<Number>),
-    CostUpTo(Box<Number>),
+    Cost(Box<NumberRange<Number>>),
     Any,
 }
 
@@ -328,10 +340,18 @@ impl<'a> Game<'a> {
             NameOr(selectors) => selectors.iter().any(|s| self.resolve_name(s, card)),
             NameNot(selector) => !self.resolve_name(selector, card),
             HasType(t) => card.types.contains(t),
-            Cost(n) => self.resolve_number(n) == self.resolve_number(&card.cost),
-            CostUpTo(n) => self.resolve_number(n) >= self.resolve_number(&card.cost),
+            Cost(n) => self
+                .resolve_number_range(n)
+                .contains(self.resolve_number(&card.cost)),
             Any => true,
         }
+    }
+
+    fn calculate_vp(&self, player: &Player) -> i32 {
+        self.resolve_zone(player, &Zone::AllMyCards)
+            .iter()
+            .map(|c| self.resolve_number(&c.card.vp))
+            .sum()
     }
 
     fn resolve_zone(&self, player: &'a Player, zone: &Zone) -> Vec<&'a CardInstance<'a>> {
@@ -817,7 +837,7 @@ mod expansions {
                 "工房",
                 3,
                 false,
-                GainCard(CardNameSelector::CostUpTo(Box::new(Constant(4)))),
+                GainCard(CardNameSelector::Cost(Box::new(UpTo(Constant(4))))),
             )
         }
 
@@ -892,10 +912,10 @@ mod expansions {
                 TrashSelect(
                     Exact(Constant(1)),
                     hand(),
-                    Box::new(GainCard(CardNameSelector::Cost(Box::new(Plus(
+                    Box::new(GainCard(CardNameSelector::Cost(Box::new(UpTo(Plus(
                         Box::new(CountCost(focused())),
                         Box::new(Constant(2)),
-                    ))))),
+                    )))))),
                 ),
             )
         }
@@ -1106,10 +1126,10 @@ mod expansions {
                             TrashCard(focused()),
                             GainCard(CardNameSelector::NameAnd(vec![
                                 CardNameSelector::HasType(Treasure),
-                                CardNameSelector::CostUpTo(Box::new(Plus(
+                                CardNameSelector::Cost(Box::new(UpTo(Plus(
                                     Box::new(CountCost(focused())),
                                     Box::new(Constant(3)),
-                                ))),
+                                )))),
                             ])),
                         ])),
                     )),
@@ -1224,7 +1244,7 @@ mod expansions {
                 6,
                 false,
                 Sequence(vec![
-                    GainCardToHand(CardNameSelector::CostUpTo(Box::new(Constant(5)))),
+                    GainCardToHand(CardNameSelector::Cost(Box::new(UpTo(Constant(5))))),
                     Select(
                         AskCardTag {
                             tag: "artisan".to_owned(),
@@ -1276,45 +1296,113 @@ mod expansions {
 
 #[cfg(test)]
 mod tests {
-    mod resolvers {
-        use crate::{Game, Player, PlayerId};
+    use std::{collections::HashMap, hash::Hash};
 
-        pub fn setup<'a>() -> Game<'a> {
-            let p0 = Player {
-                id: PlayerId { id: 0 },
-                name: "Alice".to_owned(),
-                deck: vec![],
-                hand: vec![],
-                play: vec![],
-                pending: vec![],
-                revealed: vec![],
-                discard: vec![],
-            };
+    use crate::{
+        expansions::{
+            base::*,
+            basic_supply::{self, *},
+        },
+        Card, CardId, CardInstance, Game, Player, PlayerId,
+    };
 
-            let p1 = Player {
-                id: PlayerId { id: 1 },
-                name: "Bob".to_owned(),
-                deck: vec![],
-                hand: vec![],
-                play: vec![],
-                pending: vec![],
-                revealed: vec![],
-                discard: vec![],
-            };
+    pub fn setup<'a>() -> Game<'a> {
+        let p0 = Player {
+            id: PlayerId { id: 0 },
+            name: "Alice".to_owned(),
+            deck: vec![],
+            hand: vec![],
+            play: vec![],
+            pending: vec![],
+            revealed: vec![],
+            discard: vec![],
+        };
 
-            Game {
-                players: vec![p0, p1],
-                supply: vec![],
-                trash: vec![],
-                turn: 0,
-                stack: vec![],
-            }
+        let p1 = Player {
+            id: PlayerId { id: 1 },
+            name: "Bob".to_owned(),
+            deck: vec![],
+            hand: vec![],
+            play: vec![],
+            pending: vec![],
+            revealed: vec![],
+            discard: vec![],
+        };
+
+        Game {
+            players: vec![p0, p1],
+            supply: vec![],
+            trash: vec![],
+            turn: 0,
+            stack: vec![],
         }
+    }
+
+    fn supply() -> HashMap<String, Card> {
+        let mut supply = basic_supply();
+        supply.extend(base_set());
+        supply
+    }
+
+    /*
+    手札：銅貨、銀貨、金貨、堀、山賊
+    山札：屋敷、民兵、役人、庭園、市場
+    捨て札：礼拝堂、前駆者、魔女、職人、鉱山
+    場札：地下貯蔵庫、密猟者、衛兵
+    処理中：商人、玉座の間
+     */
+    fn setup2(supply: &HashMap<String, Card>) -> Game<'_> {
+        let mut game = setup();
+        let alice = &mut game.players[0];
+        let mut cid = 0;
+        let hand = ["Copper", "Silver", "Gold", "Moat", "Bandit"];
+        let deck = ["Estate", "Militia", "Bureaucrat", "Gardens", "Market"];
+        let discard = ["Chapel", "Harbinger", "Witch", "Artisan", "Mine"];
+        let play = ["Cellar", "Poacher", "Sentry"];
+        let pending = ["Merchant", "Throne Room"];
+        for card in hand.iter() {
+            alice.hand.push(CardInstance {
+                id: CardId { id: cid },
+                card: &supply[*card],
+            });
+            cid += 1;
+        }
+        for card in deck.iter() {
+            alice.deck.push(CardInstance {
+                id: CardId { id: cid },
+                card: &supply[*card],
+            });
+            cid += 1;
+        }
+        for card in discard.iter() {
+            alice.discard.push(CardInstance {
+                id: CardId { id: cid },
+                card: &supply[*card],
+            });
+            cid += 1;
+        }
+        for card in play.iter() {
+            alice.play.push(CardInstance {
+                id: CardId { id: cid },
+                card: &supply[*card],
+            });
+            cid += 1;
+        }
+        for card in pending.iter() {
+            alice.pending.push(CardInstance {
+                id: CardId { id: cid },
+                card: &supply[*card],
+            });
+            cid += 1;
+        }
+        game
+    }
+    mod resolvers {
         mod cardname {
             use crate::{
-                expansions::base::*, expansions::basic_supply::*, tests::resolvers::setup, CardId,
-                CardInstance, CardNameSelector, CardSelector, CardType::*, Game, Number::*, Player,
-                PlayerId, Zone::*,
+                expansions::base::*, expansions::basic_supply::*, tests::setup, CardId,
+                CardInstance, CardNameSelector, CardSelector, CardType::*, Game, Number::*,
+                NumberRange::*, Player, PlayerId, Zone::*,
             };
             #[test]
             fn cardname_exact() {
@@ -1352,7 +1440,7 @@ mod tests {
                     });
                 }
                 let selector = CardSelector {
-                    name: CardNameSelector::Cost(Box::new(Constant(3))),
+                    name: CardNameSelector::Cost(Box::new(Exact(Constant(3)))),
                     zone: vec![Hand],
                 };
                 let alice = &game.players[0];
@@ -1375,7 +1463,7 @@ mod tests {
                     });
                 }
                 let selector = CardSelector {
-                    name: CardNameSelector::CostUpTo(Box::new(Constant(3))),
+                    name: CardNameSelector::Cost(Box::new(UpTo(Constant(3)))),
                     zone: vec![Hand],
                 };
                 let alice = &game.players[0];
@@ -1482,74 +1570,13 @@ mod tests {
                     base::*,
                     basic_supply::{self, *},
                 },
-                tests::resolvers::setup,
-                Card, CardId, CardInstance, CardNameSelector, CardSelector,
-                CardType::*,
-                Game,
+                tests::{setup2, supply},
+                CardNameSelector::*,
+                CardSelector,
                 Number::*,
-                Player, PlayerId,
+                NumberRange::*,
                 Zone::*,
             };
-
-            fn supply() -> HashMap<String, Card> {
-                let mut supply = basic_supply();
-                supply.extend(base_set());
-                supply
-            }
-
-            /*
-            手札：銅貨、銀貨、金貨、堀、山賊
-            山札：屋敷、民兵、役人、庭園、市場
-            捨て札：礼拝堂、前駆者、魔女、職人、鉱山
-            場札：地下貯蔵庫、密猟者、衛兵
-            処理中：商人、玉座の間
-             */
-            fn setup2(supply: &HashMap<String, Card>) -> Game<'_> {
-                let mut game = setup();
-                let alice = &mut game.players[0];
-                let mut cid = 0;
-                let hand = ["Copper", "Silver", "Gold", "Moat", "Bandit"];
-                let deck = ["Estate", "Militia", "Bureaucrat", "Gardens", "Market"];
-                let discard = ["Chapel", "Harbinger", "Witch", "Artisan", "Mine"];
-                let play = ["Cellar", "Poacher", "Sentry"];
-                let pending = ["Merchant", "Throne Room"];
-                for card in hand.iter() {
-                    alice.hand.push(CardInstance {
-                        id: CardId { id: cid },
-                        card: &supply[*card],
-                    });
-                    cid += 1;
-                }
-                for card in deck.iter() {
-                    alice.deck.push(CardInstance {
-                        id: CardId { id: cid },
-                        card: &supply[*card],
-                    });
-                    cid += 1;
-                }
-                for card in discard.iter() {
-                    alice.discard.push(CardInstance {
-                        id: CardId { id: cid },
-                        card: &supply[*card],
-                    });
-                    cid += 1;
-                }
-                for card in play.iter() {
-                    alice.play.push(CardInstance {
-                        id: CardId { id: cid },
-                        card: &supply[*card],
-                    });
-                    cid += 1;
-                }
-                for card in pending.iter() {
-                    alice.pending.push(CardInstance {
-                        id: CardId { id: cid },
-                        card: &supply[*card],
-                    });
-                    cid += 1;
-                }
-                game
-            }
 
             #[test]
             fn cardselector_hand() {
@@ -1557,7 +1584,7 @@ mod tests {
                 let game = setup2(&supply);
                 let alice = &game.players[0];
                 let selector = CardSelector {
-                    name: CardNameSelector::Any,
+                    name: Any,
                     zone: vec![Hand],
                 };
                 let result = game.resolve_selector(alice, &selector);
@@ -1570,12 +1597,63 @@ mod tests {
                 let game = setup2(&supply);
                 let alice = &game.players[0];
                 let selector = CardSelector {
-                    name: CardNameSelector::Cost(Box::new(Constant(2))),
+                    name: Cost(Box::new(Exact(Constant(2)))),
                     zone: vec![AllMyCards],
                 };
                 let result = game.resolve_selector(alice, &selector);
                 assert_eq!(result.len(), 4); // 屋敷、地下貯蔵庫、礼拝堂、堀
             }
+        }
+    }
+
+    mod base {
+        use std::vec;
+        use std::{collections::HashMap, hash::Hash};
+
+        use crate::{
+            expansions::{
+                base::*,
+                basic_supply::{self, *},
+            },
+            tests::{setup2, supply},
+            CardNameSelector::*,
+            CardSelector,
+            Number::*,
+            NumberRange::*,
+            Zone::*,
+        };
+
+        #[test]
+        fn gardens_vp() {
+            let supply = supply();
+            let mut game = setup2(&supply);
+            let alice = &game.players[0];
+            let vp = game.calculate_vp(alice);
+            assert_eq!(vp, 3); // 屋敷(1VP)x1 + 庭園(20枚: 2VP)x1
+
+            let alice = &mut game.players[0];
+            for i in 20..28 {
+                alice.deck.push(crate::CardInstance {
+                    id: crate::CardId { id: i },
+                    card: &supply["Copper"],
+                });
+            }
+
+            let alice = &game.players[0];
+            let vp = game.calculate_vp(alice);
+            assert_eq!(vp, 3); // 屋敷(1VP)x1 + 庭園(28枚: 2VP)x1
+
+            let alice = &mut game.players[0];
+            for i in 28..30 {
+                alice.deck.push(crate::CardInstance {
+                    id: crate::CardId { id: i },
+                    card: &supply["Copper"],
+                });
+            }
+
+            let alice = &game.players[0];
+            let vp = game.calculate_vp(alice);
+            assert_eq!(vp, 4); // 屋敷(1VP)x1 + 庭園(30枚: 3VP)x1
         }
     }
 }
