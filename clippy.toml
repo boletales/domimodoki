@@ -1,3 +1,0 @@
-[clippy]
-# Enable all Clippy lints
-warn = ["clippy::all"]
