@@ -117,6 +117,9 @@ enum CardEffect {
     AtomicSequence(Vec<CardEffect>), // 「不可能な指示は無視」ができない場合（改築の破棄→獲得など）に使う。SkipContinueを伝播
     Optional(AskOptionTag, Box<CardEffect>),
 
+    // Select亜種 該当カードすべてを選択、プレイヤーの選択を必要としない
+    FocusAll(CardSelector, Box<CardEffect>),
+
     // Select系：カードを選択し、Focusの選択先を変更した上で、効果を適用する
     Select(
         AskCardTag,
@@ -124,9 +127,6 @@ enum CardEffect {
         CardSelector,
         Box<CardEffect>,
     ), // n枚選択
-
-    // Select亜種 該当カードすべてを選択、プレイヤーの選択を必要としない
-    FocusAll(CardSelector, Box<CardEffect>),
 
     TrashSelect(NumberRange<Number>, CardSelector, Box<CardEffect>), // Select亜種 手札から廃棄
 
@@ -416,6 +416,15 @@ impl<'a> Game<'a> {
                 game.stack.push(newframe);
                 return (game, AskOptional(target.id, prompt));
             }
+            FocusAll(selector, effect) => {
+                let target = frame.target;
+                let mut newframe = frame.clone();
+                newframe.effect_queue = VecDeque::from(vec![*effect]);
+                newframe.focus = self.resolve_selector(target, &selector);
+                game.stack.push(frame);
+                game.stack.push(newframe);
+                return (game, Continue);
+            }
             Select(prompt, n, selector, effect) => {
                 let target = frame.target;
                 let mut newframe = frame.clone();
@@ -433,15 +442,6 @@ impl<'a> Game<'a> {
                     ),
                 );
             }
-            FocusAll(selector, effect) => {
-                let target = frame.target;
-                let mut newframe = frame.clone();
-                newframe.effect_queue = VecDeque::from(vec![*effect]);
-                newframe.focus = self.resolve_selector(target, &selector);
-                game.stack.push(frame);
-                game.stack.push(newframe);
-                return (game, Continue);
-            }
             TrashSelect(n, selector, effect) => {
                 let target = frame.target;
                 let mut newframe = frame.clone();
@@ -455,7 +455,6 @@ impl<'a> Game<'a> {
                 newframe.focus = vec![];
                 game.stack.push(frame);
                 game.stack.push(newframe);
-                let candidate = self.resolve_selector(target, &selector);
                 return (
                     game,
                     AskTrash(
@@ -464,6 +463,37 @@ impl<'a> Game<'a> {
                         self.resolve_selector(target, &selector),
                     ),
                 );
+            }
+            DiscardSelect(n, selector, effect) => {
+                let target = frame.target;
+                let mut newframe = frame.clone();
+                newframe.effect_queue = VecDeque::from(vec![
+                    DiscardCard(CardSelector {
+                        name: CardNameSelector::Any,
+                        zone: vec![Focused],
+                    }),
+                    *effect,
+                ]);
+                newframe.focus = vec![];
+                game.stack.push(frame);
+                game.stack.push(newframe);
+                return (
+                    game,
+                    AskDiscard(
+                        target.id,
+                        self.resolve_number_range(&n),
+                        self.resolve_selector(target, &selector),
+                    ),
+                );
+            }
+            RevealTop(n, effect) => {
+                let target = frame.target;
+                let mut newframe = frame.clone();
+                newframe.effect_queue = VecDeque::from(vec![*effect]);
+                newframe.focus = vec![];
+                game.stack.push(frame);
+                game.stack.push(newframe);
+                return (game, Continue);
             }
             _ => SkipContinue,
         };
