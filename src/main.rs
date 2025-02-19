@@ -98,6 +98,7 @@ enum CardEffect {
 
     // Select系：カードを選択し、Focusの選択先を変更した上で、効果を適用する
     Select(AskCardTag, Number, CardSelector, Box<CardEffect>), // n枚選択
+    SelectUpTo(AskCardTag, Number, CardSelector, Box<CardEffect>), // n枚まで選択
     SelectAny(AskCardTag, CardSelector, Box<CardEffect>),      // 好きなだけ選択
 
     // Select亜種 該当カードすべてを選択、プレイヤーの選択を必要としない
@@ -198,7 +199,8 @@ struct EffectStackFrame<'a> {
 enum EffectStepResult<'a> {
     Continue,
     Error(String),
-    AskCard(PlayerId, &'a AskCardTag, Vec<&'a CardInstance<'a>>), // 次のStepはFocusした状態で
+    AskCard(PlayerId, &'a AskCardTag, i32, Vec<&'a CardInstance<'a>>), // 次のStepはFocusした状態で
+    AskCardUpTo(PlayerId, &'a AskCardTag, i32, Vec<&'a CardInstance<'a>>), // 次のStepはFocusした状態で
     AskOptional(PlayerId, &'a AskOptionTag), // 答えがNoだったらそのスタックフレームをスキップ
     SkipContinue,                            // 不可能な指示なので飛ばす
     End,
@@ -327,7 +329,7 @@ impl<'a> Game<'a> {
             .collect()
     }
 
-    fn step(&self) -> (Game, EffectStepResult) {
+    fn step(&self) -> (Game<'a>, EffectStepResult) {
         use {CardEffect::*, EffectStepResult::*, Zone::*};
 
         let mut game = self.clone();
@@ -348,45 +350,91 @@ impl<'a> Game<'a> {
                 Continue
             }
             AtomicSequence(effects) => {
-                let newframe = EffectStackFrame {
-                    player: frame.player,
-                    target: frame.target,
-                    effect_queue: effects.into_iter().collect(),
-                    focus: frame.focus.clone(),
-                    cause: frame.cause,
-                    atomic: true,
-                };
+                let mut newframe = frame.clone();
+                newframe.effect_queue = effects.into_iter().collect();
+                newframe.atomic = true;
                 game.stack.push(frame);
                 game.stack.push(newframe);
                 return (game, Continue);
             }
             Optional(prompt, effect) => {
-                let targetid = frame.target.id;
-                let newframe = EffectStackFrame {
-                    player: frame.player,
-                    target: frame.target,
-                    effect_queue: VecDeque::from(vec![&**effect]),
-                    focus: frame.focus.clone(),
-                    cause: frame.cause,
-                    atomic: true,
-                };
+                let target = frame.target;
+                let mut newframe = frame.clone();
+                newframe.effect_queue = VecDeque::from(vec![&**effect]);
                 game.stack.push(frame);
                 game.stack.push(newframe);
-                return (game, AskOptional(targetid, prompt));
+                return (game, AskOptional(target.id, prompt));
             }
             Select(prompt, n, selector, effect) => {
-                let targetid = frame.target.id;
-                let newframe = EffectStackFrame {
-                    player: frame.player,
-                    target: frame.target,
-                    effect_queue: VecDeque::from(vec![&**effect]),
-                    focus: frame.focus.clone(),
-                    cause: frame.cause,
-                    atomic: true,
-                };
+                let target = frame.target;
+                let mut newframe = frame.clone();
+                newframe.effect_queue = VecDeque::from(vec![&**effect]);
+                newframe.focus = vec![];
                 game.stack.push(frame);
                 game.stack.push(newframe);
-                return (game, AskCard(targetid, prompt, vec![]));
+                return (
+                    game,
+                    AskCard(
+                        target.id,
+                        prompt,
+                        self.resolve_number(n),
+                        self.resolve_selector(target, selector),
+                    ),
+                );
+            }
+            SelectUpTo(prompt, n, selector, effect) => {
+                let target = frame.target;
+                let mut newframe = frame.clone();
+                newframe.effect_queue = VecDeque::from(vec![&**effect]);
+                newframe.focus = vec![];
+                game.stack.push(frame);
+                game.stack.push(newframe);
+                return (
+                    game,
+                    AskCardUpTo(
+                        target.id,
+                        prompt,
+                        self.resolve_number(n),
+                        self.resolve_selector(target, selector),
+                    ),
+                );
+            }
+            SelectAny(prompt, selector, effect) => {
+                let target = frame.target;
+                let mut newframe = frame.clone();
+                newframe.effect_queue = VecDeque::from(vec![&**effect]);
+                newframe.focus = vec![];
+                game.stack.push(frame);
+                game.stack.push(newframe);
+                let candidate = self.resolve_selector(target, selector);
+                return (
+                    game,
+                    AskCard(target.id, prompt, candidate.len() as i32, candidate),
+                );
+            }
+            FocusAll(selector, effect) => {
+                let target = frame.target;
+                let mut newframe = frame.clone();
+                newframe.effect_queue = VecDeque::from(vec![&**effect]);
+                newframe.focus = self.resolve_selector(target, selector);
+                game.stack.push(frame);
+                game.stack.push(newframe);
+                return (game, Continue);
+            }
+            TrashSelect(n, selector, effect) => {
+                let target = frame.target;
+                let mut newframe = frame.clone();
+                newframe.effect_queue = VecDeque::from(vec![
+                    &TrashCard(CardSelector {
+                        name: CardNameSelector::Any,
+                        zone: vec![Focused],
+                    }),
+                    &**effect,
+                ]);
+                newframe.focus = self.resolve_selector(target, selector);
+                game.stack.push(frame);
+                game.stack.push(newframe);
+                return (game, Continue);
             }
             _ => SkipContinue,
         };
@@ -1448,6 +1496,32 @@ mod tests {
                     cid += 1;
                 }
                 game
+            }
+
+            #[test]
+            fn cardselector_hand() {
+                let supply = supply();
+                let game = setup2(&supply);
+                let alice = &game.players[0];
+                let selector = CardSelector {
+                    name: CardNameSelector::Any,
+                    zone: vec![Hand],
+                };
+                let result = game.resolve_selector(alice, &selector);
+                assert_eq!(result.len(), 5);
+            }
+
+            #[test]
+            fn cardselector_all() {
+                let supply = supply();
+                let game = setup2(&supply);
+                let alice = &game.players[0];
+                let selector = CardSelector {
+                    name: CardNameSelector::Cost(Box::new(Constant(2))),
+                    zone: vec![AllMyCards],
+                };
+                let result = game.resolve_selector(alice, &selector);
+                assert_eq!(result.len(), 4); // 屋敷、地下貯蔵庫、礼拝堂、堀
             }
         }
     }
