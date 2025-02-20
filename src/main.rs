@@ -1,4 +1,5 @@
 use core::panic;
+use rand::Rng;
 use std::collections::{vec_deque, VecDeque};
 
 fn main() {
@@ -9,18 +10,19 @@ fn main() {
 
 #[derive(Clone)]
 #[allow(dead_code)]
-struct Player<'a> {
+struct PlayerData<'a> {
     name: String,
     deck: Vec<CardInstance<'a>>,
     hand: Vec<CardInstance<'a>>,
     play: Vec<CardInstance<'a>>,
     pending: Vec<CardInstance<'a>>,
+    aside: Vec<CardInstance<'a>>,
     revealed: Vec<CardInstance<'a>>,
     discard: Vec<CardInstance<'a>>,
     id: PlayerId,
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, PartialEq, Eq)]
 #[allow(dead_code)]
 struct PlayerId {
     id: usize,
@@ -157,6 +159,12 @@ enum CardEffect {
     // デッキトップ公開・Focus
     RevealTop(Number, Box<CardEffect>),
 
+    LookAtTop(Number, Box<CardEffect>), // デッキトップを見るだけ
+
+    DrawFocus(Number, Box<CardEffect>), // ドローしてFocus
+
+    DrawFrom(CardSelector), // ドロー扱いで手札に加える
+
     If(EffectCond, Box<CardEffect>),
     While(EffectCond, Box<CardEffect>),
     Until(EffectCond, Box<CardEffect>),
@@ -189,6 +197,7 @@ enum Zone {
     Discard,
     Play,
     Pending,
+    Aside,
     Revealed,
 
     // 以下は仮想的なゾーン
@@ -228,7 +237,7 @@ enum TurnPhase {
 #[derive(Clone)]
 #[allow(dead_code)]
 struct Game<'a> {
-    players: Vec<Player<'a>>,
+    players: Vec<PlayerData<'a>>,
     supply: Vec<Vec<(CardInstance<'a>, i32)>>,
     trash: Vec<CardInstance<'a>>,
     turn: i32,
@@ -238,8 +247,8 @@ struct Game<'a> {
 #[derive(Clone)]
 #[allow(dead_code)]
 struct EffectStackFrame<'a> {
-    player: &'a Player<'a>,
-    target: &'a Player<'a>,
+    player: PlayerId,
+    target: PlayerId,
     effect_queue: VecDeque<CardEffect>,
     focus: Vec<&'a CardInstance<'a>>,
     cause: Option<&'a CardInstance<'a>>,
@@ -279,97 +288,112 @@ struct AskCardTag {
 }
 
 #[allow(dead_code)]
-mod player_util {
-    use rand::Rng;
-
-    use crate::{CardInstance, Player};
-
-    fn shuffle(player: &mut Player) {
-        // Fisher-Yates shuffle
-        for i in (1..player.deck.len()).rev() {
-            let j = rand::rng().random_range(0..=i);
-            player.deck.swap(i, j);
-        }
-    }
-
-    fn reshuffle(player: &mut Player) {
-        player.deck.append(&mut player.discard);
-        shuffle(player);
-    }
-
-    fn draw(player: &mut Player, n: i32) {
-        for _ in 0..n {
-            if player.deck.is_empty() {
-                reshuffle(player);
-            }
-            if player.deck.is_empty() {
-                return;
-            }
-            player.hand.push(player.deck.pop().unwrap());
-        }
-    }
-}
-#[allow(dead_code)]
 impl<'a> Game<'a> {
-    fn resolve_number(&self, n: &Number) -> i32 {
+    fn shuffle(&mut self, player: PlayerId) {
+        let playerdata = self.get_player(player).unwrap();
+        // Fisher-Yates shuffle
+        for i in (1..playerdata.deck.len()).rev() {
+            let j = rand::rng().random_range(0..=i);
+            playerdata.deck.swap(i, j);
+        }
+    }
+
+    fn reshuffle(&mut self, player: PlayerId) {
+        let playerdata = self.get_player(player).unwrap();
+        playerdata.deck.append(&mut playerdata.discard);
+        self.shuffle(player);
+    }
+
+    fn get_from_deck(&mut self, player: PlayerId, n: i32) -> Vec<CardInstance<'a>> {
+        let playerdata = self.get_player(player).unwrap();
+        let mut cards = vec![];
+
+        if playerdata.deck.len() + playerdata.discard.len() < n as usize {
+            self.reshuffle(player);
+        }
+        if playerdata.deck.is_empty() {
+            self.shuffle(player);
+        }
+
+        for _ in 0..n {
+            if playerdata.deck.is_empty() {
+                return cards;
+            }
+            cards.push(playerdata.deck.pop().unwrap());
+        }
+        cards
+    }
+
+    fn get_player(&mut self, player: PlayerId) -> Option<&'_ mut PlayerData<'a>> {
+        self.players.iter_mut().find(move |p| p.id == player)
+    }
+
+    fn resolve_number(&self, player: PlayerId, n: &Number) -> i32 {
         use Number::*;
         match n {
             Constant(n) => *n,
-            CountCard(selector) => self.resolve_selector(&self.players[0], selector).len() as i32,
+            CountCard(selector) => self.resolve_selector(player, selector).len() as i32,
             CountCost(selector) => self
-                .resolve_selector(&self.players[0], selector)
+                .resolve_selector(player, selector)
                 .iter()
-                .map(|c| self.resolve_number(&c.card.cost))
+                .map(|c| self.resolve_number(player, &c.card.cost))
                 .sum(),
             CountEmptyPiles => self.supply.iter().filter(|pile| pile.is_empty()).count() as i32,
-            Plus(a, b) => self.resolve_number(a) + self.resolve_number(b),
-            Minus(a, b) => self.resolve_number(a) - self.resolve_number(b),
-            Times(a, b) => self.resolve_number(a) * self.resolve_number(b),
-            Div(a, b) => self.resolve_number(a) / self.resolve_number(b),
-            Mod(a, b) => self.resolve_number(a) % self.resolve_number(b),
+            Plus(a, b) => self.resolve_number(player, a) + self.resolve_number(player, b),
+            Minus(a, b) => self.resolve_number(player, a) - self.resolve_number(player, b),
+            Times(a, b) => self.resolve_number(player, a) * self.resolve_number(player, b),
+            Div(a, b) => self.resolve_number(player, a) / self.resolve_number(player, b),
+            Mod(a, b) => self.resolve_number(player, a) % self.resolve_number(player, b),
         }
     }
 
-    fn resolve_number_range(&self, n: &NumberRange<Number>) -> NumberRange<i32> {
+    fn resolve_number_range(&self, player: PlayerId, n: &NumberRange<Number>) -> NumberRange<i32> {
         use NumberRange::*;
         match n {
-            Exact(n) => Exact(self.resolve_number(n)),
-            UpTo(n) => UpTo(self.resolve_number(n)),
-            AtLeast(n) => AtLeast(self.resolve_number(n)),
-            Range(a, b) => Range(self.resolve_number(a), self.resolve_number(b)),
+            Exact(n) => Exact(self.resolve_number(player, n)),
+            UpTo(n) => UpTo(self.resolve_number(player, n)),
+            AtLeast(n) => AtLeast(self.resolve_number(player, n)),
+            Range(a, b) => Range(
+                self.resolve_number(player, a),
+                self.resolve_number(player, b),
+            ),
             AnyNumber => AnyNumber,
         }
     }
 
-    fn resolve_name(&self, selector: &CardNameSelector, card: &Card) -> bool {
+    fn resolve_name(&self, player: PlayerId, selector: &CardNameSelector, card: &Card) -> bool {
         use CardNameSelector::*;
         match selector {
             Name(name) => card.name == *name,
-            NameAnd(selectors) => selectors.iter().all(|s| self.resolve_name(s, card)),
-            NameOr(selectors) => selectors.iter().any(|s| self.resolve_name(s, card)),
-            NameNot(selector) => !self.resolve_name(selector, card),
+            NameAnd(selectors) => selectors.iter().all(|s| self.resolve_name(player, s, card)),
+            NameOr(selectors) => selectors.iter().any(|s| self.resolve_name(player, s, card)),
+            NameNot(selector) => !self.resolve_name(player, selector, card),
             HasType(t) => card.types.contains(t),
             Cost(n) => self
-                .resolve_number_range(n)
-                .contains(self.resolve_number(&card.cost)),
+                .resolve_number_range(player, n)
+                .contains(self.resolve_number(player, &card.cost)),
             Any => true,
         }
     }
 
-    fn calculate_vp(&self, player: &Player) -> i32 {
+    fn calculate_vp(&self, player: PlayerId) -> i32 {
         self.resolve_zone(player, &Zone::AllMyCards)
             .iter()
-            .map(|c| self.resolve_number(&c.card.vp))
+            .map(|c| self.resolve_number(player, &c.card.vp))
             .sum()
     }
 
-    fn resolve_zone(&self, player: &'a Player, zone: &Zone) -> Vec<&'a CardInstance<'a>> {
+    fn resolve_zone(&self, playerid: PlayerId, zone: &Zone) -> Vec<&'_ CardInstance<'a>> {
+        let Some(player) = self.get_player(playerid) else {
+            return vec![];
+        };
         match zone {
             Zone::Deck => player.deck.iter().collect(),
             Zone::Hand => player.hand.iter().collect(),
             Zone::Discard => player.discard.iter().collect(),
             Zone::Play => player.play.iter().collect(),
             Zone::Pending => player.pending.iter().collect(),
+            Zone::Aside => player.aside.iter().collect(),
             Zone::Revealed => player.revealed.iter().collect(),
             Zone::DeckTop => player.deck.last().into_iter().collect(),
             Zone::AllMyCards => [
@@ -378,6 +402,7 @@ impl<'a> Game<'a> {
                 &player.discard,
                 &player.play,
                 &player.pending,
+                &player.aside,
                 &player.revealed,
             ]
             .iter()
@@ -391,21 +416,22 @@ impl<'a> Game<'a> {
                 .stack
                 .last()
                 .map_or(vec![], |frame| frame.cause.into_iter().collect()),
+            _ => vec![],
         }
     }
 
     fn resolve_selector<'b>(
         &self,
-        target: &'a Player,
+        target: PlayerId,
         selector: &'b CardSelector,
-    ) -> Vec<&'a CardInstance<'a>> {
+    ) -> Vec<&'_ CardInstance<'a>> {
         use {CardSelector, Zone::*};
 
         selector
             .zone
             .iter()
             .flat_map(|zone| self.resolve_zone(target, zone))
-            .filter(|c| self.resolve_name(&selector.name, c.card))
+            .filter(|c| self.resolve_name(target, &selector.name, c.card))
             .collect()
     }
 
@@ -443,7 +469,7 @@ impl<'a> Game<'a> {
                 newframe.effect_queue = VecDeque::from(vec![*effect]);
                 game.stack.push(frame);
                 game.stack.push(newframe);
-                return (game, AskOptional(target.id, prompt));
+                return (game, AskOptional(target, prompt));
             }
             FocusAll(selector, effect) => {
                 let target = frame.target;
@@ -464,9 +490,9 @@ impl<'a> Game<'a> {
                 return (
                     game,
                     AskCard(
-                        target.id,
+                        target,
                         prompt,
-                        self.resolve_number_range(&n),
+                        self.resolve_number_range(target, &n),
                         self.resolve_selector(target, &selector),
                     ),
                 );
@@ -487,8 +513,8 @@ impl<'a> Game<'a> {
                 return (
                     game,
                     AskTrash(
-                        target.id,
-                        self.resolve_number_range(&n),
+                        target,
+                        self.resolve_number_range(target, &n),
                         self.resolve_selector(target, &selector),
                     ),
                 );
@@ -509,14 +535,18 @@ impl<'a> Game<'a> {
                 return (
                     game,
                     AskDiscard(
-                        target.id,
-                        self.resolve_number_range(&n),
+                        target,
+                        self.resolve_number_range(target, &n),
                         self.resolve_selector(target, &selector),
                     ),
                 );
             }
             RevealTop(n, effect) => {
                 let target = frame.target;
+                let topn = game
+                    .get_player(frame.target)
+                    .unwrap()
+                    .get_from_deck(self.resolve_number(target, &n));
                 let mut newframe = frame.clone();
                 newframe.effect_queue = VecDeque::from(vec![*effect]);
                 newframe.focus = vec![];
@@ -1078,7 +1108,7 @@ mod expansions {
                 Sequence(vec![
                     PlusDraw(Constant(1)),
                     PlusAction(Constant(1)),
-                    RevealTop(
+                    LookAtTop(
                         Constant(2),
                         Box::new(Sequence(vec![
                             MoveCard(focused(), Zone::Pending),
@@ -1160,29 +1190,34 @@ mod expansions {
                 false,
                 Sequence(vec![
                     Until(
+                        // 手札が7枚以上か、捨て札+デッキが0枚以下になるまで以下を繰り返す
                         CondOr(vec![
-                            // 手札==7 or 手札+捨て札+デッキ <= 6
-                            Eq(CountCard(hand()), Constant(7)),
+                            // 手札==7 or (捨て札+デッキ==0)
+                            Geq(CountCard(hand()), Constant(7)),
                             Leq(
                                 CountCard(CardSelector {
                                     name: Any,
-                                    zone: vec![Zone::Discard, Zone::Deck, Zone::Hand],
+                                    zone: vec![Zone::Discard, Zone::Deck],
                                 }),
-                                Constant(6),
+                                Constant(0),
                             ),
                         ]),
-                        Box::new(Sequence(vec![RevealTop(
+                        // デッキトップを1枚見て、
+                        Box::new(Sequence(vec![LookAtTop(
                             Constant(1),
                             Box::new(Sequence(vec![
+                                MoveCard(focused(), Zone::Pending), // 処理中ゾーンに移動する
                                 If(
+                                    // もし処理中ゾーンにアクションカードがあれば、
                                     Eq(
                                         CountCard(CardSelector {
                                             name: CardNameSelector::HasType(Action),
-                                            zone: vec![Zone::Focused],
+                                            zone: vec![Zone::Pending],
                                         }),
                                         Constant(1),
                                     ),
                                     Box::new(Select(
+                                        // 好きなだけ脇に避けてもよい
                                         AskCardTag {
                                             tag: "library".to_owned(),
                                             localized_prompt: "このカードを脇に避けますか？"
@@ -1191,16 +1226,21 @@ mod expansions {
                                         AnyNumber,
                                         focused(),
                                         Box::new(Sequence(vec![MoveCard(
-                                            focused(),
-                                            Zone::Pending,
+                                            in_zone(Zone::Pending),
+                                            Zone::Aside,
                                         )])),
                                     )),
                                 ),
-                                PlusDraw(Constant(1)),
+                                // その後、処理中ゾーンに残っているカードをドローした扱いで手札に加える
+                                DrawFrom(CardSelector {
+                                    name: Any,
+                                    zone: vec![Zone::Pending],
+                                }),
                             ])),
                         )])),
                     ),
-                    DiscardCard(in_zone(Zone::Pending)),
+                    // 最後に、脇に避けたカードをすべて捨て札にする
+                    DiscardCard(in_zone(Zone::Aside)),
                 ]),
             )
         }
@@ -1314,29 +1354,31 @@ mod tests {
         },
         Card,
         CardAddress::*,
-        CardId, CardInstance, Game, Player, PlayerId,
+        CardId, CardInstance, Game, PlayerData, PlayerId,
         Zone::*,
     };
 
     pub fn setup<'a>() -> Game<'a> {
-        let p0 = Player {
+        let p0 = PlayerData {
             id: PlayerId { id: 0 },
             name: "Alice".to_owned(),
             deck: vec![],
             hand: vec![],
             play: vec![],
             pending: vec![],
+            aside: vec![],
             revealed: vec![],
             discard: vec![],
         };
 
-        let p1 = Player {
+        let p1 = PlayerData {
             id: PlayerId { id: 1 },
             name: "Bob".to_owned(),
             deck: vec![],
             hand: vec![],
             play: vec![],
             pending: vec![],
+            aside: vec![],
             revealed: vec![],
             discard: vec![],
         };
@@ -1419,7 +1461,7 @@ mod tests {
             use crate::{
                 expansions::base::*, expansions::basic_supply::*, tests::setup, CardAddress::*,
                 CardId, CardInstance, CardNameSelector, CardSelector, CardType::*, Game, Number::*,
-                NumberRange::*, Player, PlayerId, Zone::*,
+                NumberRange::*, PlayerData, PlayerId, Zone::*,
             };
             #[test]
             fn cardname_exact() {
@@ -1439,7 +1481,7 @@ mod tests {
                     zone: vec![Hand],
                 };
                 let alice = &game.players[0];
-                let result = game.resolve_selector(alice, &selector);
+                let result = game.resolve_selector(alice.id, &selector);
                 assert_eq!(result.len(), 2);
             }
 
@@ -1463,7 +1505,7 @@ mod tests {
                     zone: vec![Hand],
                 };
                 let alice = &game.players[0];
-                let result = game.resolve_selector(alice, &selector);
+                let result = game.resolve_selector(alice.id, &selector);
                 assert_eq!(result.len(), 2);
             }
 
@@ -1487,7 +1529,7 @@ mod tests {
                     zone: vec![Hand],
                 };
                 let alice = &game.players[0];
-                let result = game.resolve_selector(alice, &selector);
+                let result = game.resolve_selector(alice.id, &selector);
                 assert_eq!(result.len(), 3);
             }
 
@@ -1514,7 +1556,7 @@ mod tests {
                     zone: vec![Hand],
                 };
                 let alice = &game.players[0];
-                let result = game.resolve_selector(alice, &selector);
+                let result = game.resolve_selector(alice.id, &selector);
                 assert_eq!(result.len(), 2);
             }
 
@@ -1549,9 +1591,9 @@ mod tests {
                     zone: vec![Hand],
                 };
                 let alice = &game.players[0];
-                let result_t = game.resolve_selector(alice, &selector_t);
-                let result_a = game.resolve_selector(alice, &selector_a);
-                let result_r = game.resolve_selector(alice, &selector_r);
+                let result_t = game.resolve_selector(alice.id, &selector_t);
+                let result_a = game.resolve_selector(alice.id, &selector_a);
+                let result_r = game.resolve_selector(alice.id, &selector_r);
                 assert_eq!(result_t.len(), 3);
                 assert_eq!(result_a.len(), 2);
                 assert_eq!(result_r.len(), 1);
@@ -1580,7 +1622,7 @@ mod tests {
                     zone: vec![Hand],
                 };
                 let alice = &game.players[0];
-                let result = game.resolve_selector(alice, &selector);
+                let result = game.resolve_selector(alice.id, &selector);
                 assert_eq!(result.len(), 5);
             }
         }
@@ -1610,7 +1652,7 @@ mod tests {
                     name: Any,
                     zone: vec![Hand],
                 };
-                let result = game.resolve_selector(alice, &selector);
+                let result = game.resolve_selector(alice.id, &selector);
                 assert_eq!(result.len(), 5);
             }
 
@@ -1623,7 +1665,7 @@ mod tests {
                     name: Cost(Box::new(Exact(Constant(2)))),
                     zone: vec![AllMyCards],
                 };
-                let result = game.resolve_selector(alice, &selector);
+                let result = game.resolve_selector(alice.id, &selector);
                 assert_eq!(result.len(), 4); // 屋敷、地下貯蔵庫、礼拝堂、堀
             }
         }
@@ -1652,7 +1694,7 @@ mod tests {
             let supply = supply();
             let mut game = setup2(&supply);
             let alice = &game.players[0];
-            let vp = game.calculate_vp(alice);
+            let vp = game.calculate_vp(alice.id);
             assert_eq!(vp, 3); // 屋敷(1VP)x1 + 庭園(20枚: 2VP)x1
 
             let alice = &mut game.players[0];
@@ -1665,7 +1707,7 @@ mod tests {
             }
 
             let alice = &game.players[0];
-            let vp = game.calculate_vp(alice);
+            let vp = game.calculate_vp(alice.id);
             assert_eq!(vp, 3); // 屋敷(1VP)x1 + 庭園(28枚: 2VP)x1
 
             let alice = &mut game.players[0];
@@ -1678,7 +1720,7 @@ mod tests {
             }
 
             let alice = &game.players[0];
-            let vp = game.calculate_vp(alice);
+            let vp = game.calculate_vp(alice.id);
             assert_eq!(vp, 4); // 屋敷(1VP)x1 + 庭園(30枚: 3VP)x1
         }
     }
