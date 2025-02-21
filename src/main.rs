@@ -8,18 +8,20 @@ fn main() {
 // Dominion simulator
 
 mod player {
+    use crate::card_instance::CardInstance;
+
     #[derive(Clone)]
     #[allow(dead_code)]
     pub struct PlayerData<'a> {
-        name: String,
-        deck: Vec<CardInstance<'a>>,
-        hand: Vec<CardInstance<'a>>,
-        play: Vec<CardInstance<'a>>,
-        pending: Vec<CardInstance<'a>>,
-        aside: Vec<CardInstance<'a>>,
-        revealed: Vec<CardInstance<'a>>,
-        discard: Vec<CardInstance<'a>>,
-        id: PlayerId,
+        pub name: String,
+        pub deck: Vec<CardInstance<'a>>,
+        pub hand: Vec<CardInstance<'a>>,
+        pub play: Vec<CardInstance<'a>>,
+        pub pending: Vec<CardInstance<'a>>,
+        pub aside: Vec<CardInstance<'a>>,
+        pub revealed: Vec<CardInstance<'a>>,
+        pub discard: Vec<CardInstance<'a>>,
+        pub id: PlayerId,
     }
 
     #[derive(Clone, Copy, PartialEq, Eq)]
@@ -27,14 +29,25 @@ mod player {
     pub struct PlayerId {
         id: usize,
     }
+
+    impl PlayerId {
+        pub fn new(id: usize) -> PlayerId {
+            PlayerId { id }
+        }
+    }
 }
 
 mod card_instance {
+    use crate::card::Card;
+    use crate::player::PlayerId;
+    use crate::zone::Zone;
+
+    #[derive(Clone)]
     #[allow(dead_code)]
     pub struct CardInstance<'a> {
-        card: &'a Card,
-        id: CardId,
-        address: CardAddress,
+        pub card: &'a Card,
+        pub id: CardInstanceId,
+        pub address: CardAddress,
     }
 
     #[derive(Clone)]
@@ -47,21 +60,36 @@ mod card_instance {
 
     #[derive(Clone, Copy)]
     #[allow(dead_code)]
-    pub struct CardId {
+    pub struct CardInstanceId {
         id: usize,
+    }
+
+    impl CardInstanceId {
+        pub fn new(id: usize) -> CardInstanceId {
+            CardInstanceId { id }
+        }
     }
 }
 
 mod effect_stack {
+    use crate::{
+        ask_tag::{AskCardTag, AskOptionTag},
+        card_instance::CardInstance,
+        effect::CardEffect,
+        number::NumberRange,
+        player::PlayerId,
+    };
+    use std::collections::VecDeque;
+
     #[derive(Clone)]
     #[allow(dead_code)]
     pub struct EffectStackFrame<'a> {
-        player: PlayerId,
-        target: PlayerId,
-        effect_queue: VecDeque<CardEffect>,
-        focus: Vec<&'a CardInstance<'a>>,
-        cause: Option<&'a CardInstance<'a>>,
-        atomic: bool,
+        pub player: PlayerId,
+        pub target: PlayerId,
+        pub effect_queue: VecDeque<CardEffect>,
+        pub focus: Vec<&'a CardInstance<'a>>,
+        pub cause: Option<&'a CardInstance<'a>>,
+        pub atomic: bool,
     }
 
     #[allow(dead_code)]
@@ -82,7 +110,7 @@ mod effect_stack {
     }
 }
 
-mod effect_result {
+mod ask_tag {
     #[derive(Clone)]
     #[allow(dead_code)]
     pub struct AskOptionTag {
@@ -91,15 +119,39 @@ mod effect_result {
         default: Option<bool>,
     }
 
+    impl AskOptionTag {
+        pub fn new(tag: &str, localized_prompt: &str, default: Option<bool>) -> AskOptionTag {
+            AskOptionTag {
+                tag: tag.to_owned(),
+                localized_prompt: localized_prompt.to_owned(),
+                default,
+            }
+        }
+    }
+
     #[derive(Clone)]
     #[allow(dead_code)]
     pub struct AskCardTag {
         tag: String,
         localized_prompt: String,
     }
+
+    impl AskCardTag {
+        pub fn new(tag: &str, localized_prompt: &str) -> AskCardTag {
+            AskCardTag {
+                tag: tag.to_owned(),
+                localized_prompt: localized_prompt.to_owned(),
+            }
+        }
+    }
 }
 
 mod card {
+    use crate::{
+        effect::{CardEffect, EffectTrigger},
+        number::Number,
+    };
+
     #[allow(dead_code)]
     pub struct Card {
         pub name: String,
@@ -123,6 +175,8 @@ mod card {
 }
 
 mod number {
+    use crate::selector::CardSelector;
+
     #[derive(Clone)]
     #[allow(dead_code)]
     pub enum Number {
@@ -148,7 +202,7 @@ mod number {
     }
 
     impl NumberRange<i32> {
-        const fn contains(&self, n: i32) -> bool {
+        pub const fn contains(&self, n: i32) -> bool {
             use NumberRange::*;
             match self {
                 Exact(m) => n == *m,
@@ -162,6 +216,13 @@ mod number {
 }
 
 mod effect {
+    use crate::{
+        ask_tag::{AskCardTag, AskOptionTag},
+        number::{Number, NumberRange},
+        selector::{CardNameSelector, CardSelector},
+        zone::Zone,
+    };
+
     #[derive(Clone)]
     #[allow(dead_code)]
     pub enum EffectCond {
@@ -265,6 +326,12 @@ mod zone {
 }
 
 mod selector {
+    use crate::{
+        card::CardType,
+        number::{Number, NumberRange},
+        zone::Zone,
+    };
+
     #[derive(Clone)]
     #[allow(dead_code)]
     pub enum CardNameSelector {
@@ -280,8 +347,8 @@ mod selector {
     #[derive(Clone)]
     #[allow(dead_code)]
     pub struct CardSelector {
-        name: CardNameSelector,
-        zone: Vec<Zone>,
+        pub name: CardNameSelector,
+        pub zone: Vec<Zone>,
     }
 }
 
@@ -295,19 +362,36 @@ mod turn_phase {
     }
 }
 
-#[derive(Clone)]
-#[allow(dead_code)]
-struct Game<'a> {
-    players: Vec<PlayerData<'a>>,
-    supply: Vec<Vec<(CardInstance<'a>, i32)>>,
-    trash: Vec<CardInstance<'a>>,
-    turn: i32,
-    stack: Vec<EffectStackFrame<'a>>,
-}
-
 mod game {
-    use crate::number::{Number::*, NumberRange::*};
+    use crate::{
+        card::Card,
+        card_instance::CardInstance,
+        effect::CardEffect::*,
+        effect_stack::{
+            EffectStackFrame,
+            EffectStepResult::{self, *},
+        },
+        number::{
+            Number,
+            NumberRange::{self, *},
+        },
+        player::{PlayerData, PlayerId},
+        selector::{CardNameSelector, CardSelector},
+        zone::Zone::{self, *},
+    };
     use rand::Rng;
+    use std::collections::VecDeque;
+
+    #[derive(Clone)]
+    #[allow(dead_code)]
+    pub struct Game<'a> {
+        pub players: Vec<PlayerData<'a>>,
+        pub supply: Vec<Vec<(CardInstance<'a>, i32)>>,
+        pub trash: Vec<CardInstance<'a>>,
+        pub turn: i32,
+        pub stack: Vec<EffectStackFrame<'a>>,
+    }
+
     #[allow(dead_code)]
     impl<'a> Game<'a> {
         fn shuffle(&mut self, player: PlayerId) {
@@ -467,7 +551,7 @@ mod game {
             }
         }
 
-        fn resolve_selector<'b>(
+        pub fn resolve_selector<'b>(
             &self,
             target: PlayerId,
             selector: &'b CardSelector,
@@ -598,10 +682,17 @@ mod game {
 mod card_util {
 
     use crate::{
-        card::{Card, CardType::*},
-        effect::EffectTrigger::*,
+        card::{
+            Card,
+            CardType::{self, *},
+        },
+        effect::{
+            CardEffect,
+            EffectTrigger::{self, *},
+        },
         number::Number::*,
         selector::{CardNameSelector::*, CardSelector},
+        zone::Zone,
     };
 
     pub fn vanilla_effect(draw: i32, action: i32, buy: i32, coin: i32) -> CardEffect {
@@ -739,8 +830,10 @@ mod card_util {
 #[allow(dead_code)]
 mod expansions {
     pub mod basic_supply {
-        use crate::*;
-        use card_util::*;
+        use crate::{
+            card::{Card, CardType::*},
+            card_util::*,
+        };
         use std::collections::HashMap;
         // 基本カード
         pub fn copper() -> Card {
@@ -785,8 +878,16 @@ mod expansions {
         use std::vec;
 
         use crate::{
-            card_util::*, CardEffect::*, CardNameSelector::Any, CardType::*, EffectCond::*,
-            EffectTrigger::*, Number::*, NumberRange::*, *,
+            ask_tag::{AskCardTag, AskOptionTag},
+            card::{Card, CardType::*},
+            card_util::*,
+            effect::{CardEffect::*, EffectCond::*, EffectTrigger::*},
+            number::{Number::*, NumberRange::*},
+            selector::{
+                CardNameSelector::{self, *},
+                CardSelector,
+            },
+            zone::Zone,
         };
 
         /* ドミニオン 基本セット（第2版）
@@ -829,10 +930,7 @@ mod expansions {
                 Sequence(vec![
                     PlusAction(Constant(1)),
                     Select(
-                        AskCardTag {
-                            tag: "cellar".to_owned(),
-                            localized_prompt: "捨て札にするカードを選んでください".to_owned(),
-                        },
+                        AskCardTag::new("cellar", "捨て札にするカードを選んでください"),
                         AnyNumber,
                         hand(),
                         Box::new(Sequence(vec![
@@ -890,11 +988,11 @@ mod expansions {
                             },
                             // 使ってもよい
                             Box::new(Optional(
-                                AskOptionTag {
-                                    tag: "chancellor".to_owned(),
-                                    localized_prompt: "このカードを使用しますか？".to_owned(),
-                                    default: Some(true),
-                                },
+                                AskOptionTag::new(
+                                    "chancellor",
+                                    "このカードを使用しますか？",
+                                    Some(true),
+                                ),
                                 Box::new(Sequence(vec![
                                     UseCard(focused()),
                                     DiscardCard(focused()),
@@ -961,11 +1059,8 @@ mod expansions {
                     PlusDraw(Constant(1)),
                     PlusAction(Constant(1)),
                     Select(
-                        AskCardTag {
-                            tag: "harbinger".to_owned(),
-                            localized_prompt: "デッキトップに置くカードを選んでください".to_owned(),
-                        },
-                        AnyNumber,
+                        AskCardTag::new("harbinger", "デッキトップに置くカードを選んでください"),
+                        Exact(Constant(1)),
                         discarded(),
                         Box::new(MoveCard(focused(), Zone::DeckTop)),
                     ),
@@ -1009,11 +1104,7 @@ mod expansions {
                 4,
                 false,
                 Optional(
-                    AskOptionTag {
-                        tag: "moneylender".to_owned(),
-                        localized_prompt: "銅貨を破棄しますか？".to_owned(),
-                        default: Some(true),
-                    },
+                    AskOptionTag::new("moneylender", "銅貨を破棄しますか？", Some(true)),
                     Box::new(TrashSelect(
                         Exact(Constant(1)),
                         CardSelector {
@@ -1037,10 +1128,7 @@ mod expansions {
                 4,
                 false,
                 Select(
-                    AskCardTag {
-                        tag: "throne_room".to_owned(),
-                        localized_prompt: "使用するカードを選んでください".to_owned(),
-                    },
+                    AskCardTag::new("throne_room", "使用するカードを選んでください"),
                     Exact(Constant(1)),
                     CardSelector {
                         name: CardNameSelector::HasType(Action),
@@ -1102,11 +1190,10 @@ mod expansions {
                 Sequence(vec![
                     PlusCoin(Constant(2)),
                     AttackAllOpponents(Box::new(Select(
-                        AskCardTag {
-                            tag: "bureaucrat".to_owned(),
-                            localized_prompt: "デッキトップに置く勝利点カードを選んでください"
-                                .to_owned(),
-                        },
+                        AskCardTag::new(
+                            "bureaucrat",
+                            "デッキトップに置く勝利点カードを選んでください",
+                        ),
                         Exact(Constant(1)),
                         CardSelector {
                             name: CardNameSelector::HasType(Victory),
@@ -1187,11 +1274,7 @@ mod expansions {
                 5,
                 false,
                 Optional(
-                    AskOptionTag {
-                        tag: "mine".to_owned(),
-                        localized_prompt: "財宝を破棄しますか？".to_owned(),
-                        default: Some(true),
-                    },
+                    AskOptionTag::new("mine", "財宝を破棄しますか？", Some(true)),
                     Box::new(TrashSelect(
                         Exact(Constant(1)),
                         CardSelector {
@@ -1255,11 +1338,7 @@ mod expansions {
                                     ),
                                     Box::new(Select(
                                         // 好きなだけ脇に避けてもよい
-                                        AskCardTag {
-                                            tag: "library".to_owned(),
-                                            localized_prompt: "このカードを脇に避けますか？"
-                                                .to_owned(),
-                                        },
+                                        AskCardTag::new("library", "このカードを脇に避けますか？"),
                                         AnyNumber,
                                         focused(),
                                         Box::new(Sequence(vec![MoveCard(
@@ -1332,10 +1411,7 @@ mod expansions {
                 Sequence(vec![
                     GainCardToHand(CardNameSelector::Cost(Box::new(UpTo(Constant(5))))),
                     Select(
-                        AskCardTag {
-                            tag: "artisan".to_owned(),
-                            localized_prompt: "デッキトップに置くカードを選んでください".to_owned(),
-                        },
+                        AskCardTag::new("artisan", "デッキトップに置くカードを選んでください"),
                         Exact(Constant(1)),
                         hand(),
                         Box::new(MoveCard(focused(), Zone::DeckTop)),
@@ -1385,19 +1461,20 @@ mod tests {
     use std::{collections::HashMap, hash::Hash};
 
     use crate::{
+        card::{Card, CardType},
+        card_instance::{CardAddress::*, CardInstance, CardInstanceId},
         expansions::{
             base::*,
             basic_supply::{self, *},
         },
-        Card,
-        CardAddress::*,
-        CardId, CardInstance, Game, PlayerData, PlayerId,
-        Zone::*,
+        game::Game,
+        player::{PlayerData, PlayerId},
+        zone::Zone::*,
     };
 
     pub fn setup<'a>() -> Game<'a> {
         let p0 = PlayerData {
-            id: PlayerId { id: 0 },
+            id: PlayerId::new(0),
             name: "Alice".to_owned(),
             deck: vec![],
             hand: vec![],
@@ -1409,7 +1486,7 @@ mod tests {
         };
 
         let p1 = PlayerData {
-            id: PlayerId { id: 1 },
+            id: PlayerId::new(1),
             name: "Bob".to_owned(),
             deck: vec![],
             hand: vec![],
@@ -1453,7 +1530,7 @@ mod tests {
         let pending = ["Merchant", "Throne Room"];
         for card in hand.iter() {
             alice.hand.push(CardInstance {
-                id: CardId { id: cid },
+                id: CardInstanceId::new(cid),
                 card: &supply[*card],
                 address: PlayerOwned(alice.id, Hand),
             });
@@ -1461,7 +1538,7 @@ mod tests {
         }
         for card in deck.iter() {
             alice.deck.push(CardInstance {
-                id: CardId { id: cid },
+                id: CardInstanceId::new(cid),
                 card: &supply[*card],
                 address: PlayerOwned(alice.id, Deck),
             });
@@ -1469,7 +1546,7 @@ mod tests {
         }
         for card in discard.iter() {
             alice.discard.push(CardInstance {
-                id: CardId { id: cid },
+                id: CardInstanceId::new(cid),
                 card: &supply[*card],
                 address: PlayerOwned(alice.id, Discard),
             });
@@ -1477,7 +1554,7 @@ mod tests {
         }
         for card in play.iter() {
             alice.play.push(CardInstance {
-                id: CardId { id: cid },
+                id: CardInstanceId::new(cid),
                 card: &supply[*card],
                 address: PlayerOwned(alice.id, Play),
             });
@@ -1485,7 +1562,7 @@ mod tests {
         }
         for card in pending.iter() {
             alice.pending.push(CardInstance {
-                id: CardId { id: cid },
+                id: CardInstanceId::new(cid),
                 card: &supply[*card],
                 address: PlayerOwned(alice.id, Pending),
             });
@@ -1497,7 +1574,7 @@ mod tests {
         mod cardname {
             use crate::{
                 card::CardType::*,
-                card_instance::{CardAddress::*, CardId, CardInstance},
+                card_instance::{CardAddress::*, CardInstance, CardInstanceId},
                 expansions::base::*,
                 expansions::basic_supply::*,
                 number::{Number::*, NumberRange::*},
@@ -1514,7 +1591,7 @@ mod tests {
                 let hand = [&copper, &copper, &copper];
                 for (i, card) in hand.iter().enumerate() {
                     alice.hand.push(CardInstance {
-                        id: CardId { id: i },
+                        id: CardInstanceId::new(i),
                         card,
                         address: PlayerOwned(alice.id, Hand),
                     });
@@ -1538,7 +1615,7 @@ mod tests {
                 let hand = [&copper, &silver, &silver, &gold];
                 for (i, card) in hand.iter().enumerate() {
                     alice.hand.push(CardInstance {
-                        id: CardId { id: i },
+                        id: CardInstanceId::new(i),
                         card,
                         address: PlayerOwned(alice.id, Hand),
                     });
@@ -1562,7 +1639,7 @@ mod tests {
                 let hand = [&copper, &silver, &silver, &gold];
                 for (i, card) in hand.iter().enumerate() {
                     alice.hand.push(CardInstance {
-                        id: CardId { id: i },
+                        id: CardInstanceId::new(i),
                         card,
                         address: PlayerOwned(alice.id, Hand),
                     });
@@ -1586,7 +1663,7 @@ mod tests {
                 let hand = [&copper, &silver, &gold];
                 for (i, card) in hand.iter().enumerate() {
                     alice.hand.push(CardInstance {
-                        id: CardId { id: i },
+                        id: CardInstanceId::new(i),
                         card,
                         address: PlayerOwned(alice.id, Hand),
                     });
@@ -1616,7 +1693,7 @@ mod tests {
                 let hand = [&copper, &silver, &gold, &moat, &bandit];
                 for (i, card) in hand.iter().enumerate() {
                     alice.hand.push(CardInstance {
-                        id: CardId { id: i },
+                        id: CardInstanceId::new(i),
                         card,
                         address: PlayerOwned(alice.id, Hand),
                     });
@@ -1655,7 +1732,7 @@ mod tests {
                 let hand = [&copper, &silver, &gold, &moat, &bandit];
                 for (i, card) in hand.iter().enumerate() {
                     alice.hand.push(CardInstance {
-                        id: CardId { id: i },
+                        id: CardInstanceId::new(i),
                         card,
                         address: PlayerOwned(alice.id, Hand),
                     });
@@ -1678,12 +1755,10 @@ mod tests {
                     base::*,
                     basic_supply::{self, *},
                 },
+                number::{Number::*, NumberRange::*},
+                selector::{CardNameSelector::*, CardSelector},
                 tests::{setup2, supply},
-                CardNameSelector::*,
-                CardSelector,
-                Number::*,
-                NumberRange::*,
-                Zone::*,
+                zone::Zone::*,
             };
 
             #[test]
@@ -1719,17 +1794,13 @@ mod tests {
         use std::{collections::HashMap, hash::Hash};
 
         use crate::{
+            card_instance::{CardAddress::*, CardInstance, CardInstanceId},
             expansions::{
                 base::*,
                 basic_supply::{self, *},
             },
             tests::{setup2, supply},
-            CardAddress::*,
-            CardNameSelector::*,
-            CardSelector,
-            Number::*,
-            NumberRange::*,
-            Zone::*,
+            zone::Zone::*,
         };
 
         #[test]
@@ -1742,8 +1813,8 @@ mod tests {
 
             let alice = &mut game.players[0];
             for i in 20..28 {
-                alice.deck.push(crate::CardInstance {
-                    id: crate::CardId { id: i },
+                alice.deck.push(CardInstance {
+                    id: CardInstanceId::new(i),
                     card: &supply["Copper"],
                     address: PlayerOwned(alice.id, Deck),
                 });
@@ -1755,8 +1826,8 @@ mod tests {
 
             let alice = &mut game.players[0];
             for i in 28..30 {
-                alice.deck.push(crate::CardInstance {
-                    id: crate::CardId { id: i },
+                alice.deck.push(CardInstance {
+                    id: CardInstanceId::new(i),
                     card: &supply["Copper"],
                     address: PlayerOwned(alice.id, Deck),
                 });
