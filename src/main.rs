@@ -290,7 +290,7 @@ struct AskCardTag {
 #[allow(dead_code)]
 impl<'a> Game<'a> {
     fn shuffle(&mut self, player: PlayerId) {
-        let playerdata = self.get_player(player).unwrap();
+        let playerdata = self.get_player_mut(player).unwrap();
         // Fisher-Yates shuffle
         for i in (1..playerdata.deck.len()).rev() {
             let j = rand::rng().random_range(0..=i);
@@ -299,22 +299,23 @@ impl<'a> Game<'a> {
     }
 
     fn reshuffle(&mut self, player: PlayerId) {
-        let playerdata = self.get_player(player).unwrap();
+        let playerdata = self.get_player_mut(player).unwrap();
         playerdata.deck.append(&mut playerdata.discard);
         self.shuffle(player);
     }
 
-    fn get_from_deck(&mut self, player: PlayerId, n: i32) -> Vec<CardInstance<'a>> {
+    /// プレイヤーのデッキからカードをn枚引く。（デッキ残量が不足している場合はリシャッフルしてから引く）
+    fn get_from_deck(mut self, player: PlayerId, n: i32) -> Vec<CardInstance<'a>> {
         let playerdata = self.get_player(player).unwrap();
         let mut cards = vec![];
 
-        if playerdata.deck.len() + playerdata.discard.len() < n as usize {
+        let n = n.min((playerdata.deck.len() + playerdata.discard.len()) as i32); // 捨て札混ぜても必要数取れないなら、必要数を減らす
+
+        if playerdata.deck.len() < n as usize {
             self.reshuffle(player);
         }
-        if playerdata.deck.is_empty() {
-            self.shuffle(player);
-        }
 
+        let playerdata = self.get_player_mut(player).unwrap();
         for _ in 0..n {
             if playerdata.deck.is_empty() {
                 return cards;
@@ -324,7 +325,24 @@ impl<'a> Game<'a> {
         cards
     }
 
-    fn get_player(&mut self, player: PlayerId) -> Option<&'_ mut PlayerData<'a>> {
+    /// デッキトップを見る（リシャッフルしない）
+    fn look_at_top(&self, player: PlayerId, n: i32) -> Vec<&'_ CardInstance<'a>> {
+        let playerdata = self.get_player(player).unwrap();
+        // 後半n枚を見る
+        playerdata
+            .deck
+            .iter()
+            .rev()
+            .take(n as usize)
+            .rev()
+            .collect()
+    }
+
+    fn get_player(&self, player: PlayerId) -> Option<&'_ PlayerData<'a>> {
+        self.players.iter().find(move |p| p.id == player)
+    }
+
+    fn get_player_mut(&mut self, player: PlayerId) -> Option<&'_ mut PlayerData<'a>> {
         self.players.iter_mut().find(move |p| p.id == player)
     }
 
@@ -435,18 +453,18 @@ impl<'a> Game<'a> {
             .collect()
     }
 
-    fn step(&self) -> (Game<'a>, EffectStepResult) {
+    fn step(mut self) -> EffectStepResult<'a> {
         use {CardEffect::*, EffectStepResult::*, Zone::*};
 
-        let mut game = self.clone();
+        let mut game = self;
 
         let Some(mut frame) = game.stack.pop() else {
-            return (game, EffectStepResult::End);
+            return End;
         };
 
         let Some(effect) = frame.effect_queue.clone().pop_front() else {
             game.stack.pop();
-            return (game, EffectStepResult::Continue);
+            return Continue;
         };
 
         let result = match effect {
@@ -461,7 +479,7 @@ impl<'a> Game<'a> {
                 newframe.atomic = true;
                 game.stack.push(frame);
                 game.stack.push(newframe);
-                return (game, Continue);
+                return Continue;
             }
             Optional(prompt, effect) => {
                 let target = frame.target;
@@ -543,10 +561,7 @@ impl<'a> Game<'a> {
             }
             RevealTop(n, effect) => {
                 let target = frame.target;
-                let topn = game
-                    .get_player(frame.target)
-                    .unwrap()
-                    .get_from_deck(self.resolve_number(target, &n));
+                let topn = game.get_from_deck(target, self.resolve_number(target, &n));
                 let mut newframe = frame.clone();
                 newframe.effect_queue = VecDeque::from(vec![*effect]);
                 newframe.focus = vec![];
