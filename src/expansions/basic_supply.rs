@@ -1,4 +1,5 @@
-use crate::{card::Card, card_util::*};
+use crate::core::card::Card;
+use crate::expansions::card_util::*;
 use std::collections::HashMap;
 // 基本カード
 pub fn copper() -> Card {

@@ -1,4 +1,4 @@
-use crate::selector::CardSelector;
+use crate::core::selector::CardSelector;
 
 #[derive(Clone)]
 #[allow(dead_code)]

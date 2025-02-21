@@ -1,4 +1,4 @@
-use crate::card_instance::CardInstance;
+use crate::game::card_instance::CardInstance;
 
 #[derive(Clone)]
 #[allow(dead_code)]

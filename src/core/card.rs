@@ -1,4 +1,4 @@
-use crate::{
+use crate::core::{
     effect::{CardEffect, EffectTrigger},
     number::Number,
 };

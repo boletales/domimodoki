@@ -1,10 +1,9 @@
 use std::collections::HashMap;
 use std::vec;
 
-use crate::{
+use crate::core::{
     ask_tag::{AskCardTag, AskOptionTag},
     card::{Card, CardType::*},
-    card_util::*,
     effect::{CardEffect::*, EffectCond::*, EffectTrigger::*},
     number::{Number::*, NumberRange::*},
     selector::{
@@ -13,6 +12,7 @@ use crate::{
     },
     zone::Zone,
 };
+use crate::expansions::card_util::*;
 
 /* ドミニオン 基本セット（第2版）
 カードリスト

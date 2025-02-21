@@ -1,12 +1,13 @@
 use std::collections::HashMap;
 
 use crate::{
-    card::Card,
-    card_instance::{CardAddress::*, CardInstance, CardInstanceId},
+    core::{card::Card, zone::Zone::*},
     expansions::{base::*, basic_supply::*},
-    game::Game,
-    player::{PlayerData, PlayerId},
-    zone::Zone::*,
+    game::{
+        card_instance::{CardAddress::*, CardInstance, CardInstanceId},
+        game::Game,
+        player::{PlayerData, PlayerId},
+    },
 };
 
 pub fn setup<'a>() -> Game<'a> {
@@ -110,14 +111,15 @@ fn setup2(supply: &HashMap<String, Card>) -> Game<'_> {
 mod resolvers {
     mod cardname {
         use crate::{
-            card::CardType::*,
-            card_instance::{CardAddress::*, CardInstance, CardInstanceId},
-            expansions::base::*,
-            expansions::basic_supply::*,
-            number::{Number::*, NumberRange::*},
-            selector::{CardNameSelector, CardSelector},
+            core::{
+                card::CardType::*,
+                number::{Number::*, NumberRange::*},
+                selector::{CardNameSelector, CardSelector},
+                zone::Zone::*,
+            },
+            expansions::{base::*, basic_supply::*},
+            game::card_instance::{CardAddress::*, CardInstance, CardInstanceId},
             tests::setup,
-            zone::Zone::*,
         };
         #[test]
         fn cardname_exact() {
@@ -286,10 +288,12 @@ mod resolvers {
         use std::vec;
 
         use crate::{
-            number::{Number::*, NumberRange::*},
-            selector::{CardNameSelector::*, CardSelector},
+            core::{
+                number::{Number::*, NumberRange::*},
+                selector::{CardNameSelector::*, CardSelector},
+                zone::Zone::*,
+            },
             tests::{setup2, supply},
-            zone::Zone::*,
         };
 
         #[test]
@@ -322,9 +326,9 @@ mod resolvers {
 
 mod base {
     use crate::{
-        card_instance::{CardAddress::*, CardInstance, CardInstanceId},
+        core::zone::Zone::*,
+        game::card_instance::{CardAddress::*, CardInstance, CardInstanceId},
         tests::{setup2, supply},
-        zone::Zone::*,
     };
 
     #[test]

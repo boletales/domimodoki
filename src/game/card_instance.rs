@@ -1,6 +1,5 @@
-use crate::card::Card;
-use crate::player::PlayerId;
-use crate::zone::Zone;
+use crate::core::{card::Card, zone::Zone};
+use crate::game::player::PlayerId;
 
 #[derive(Clone)]
 #[allow(dead_code)]

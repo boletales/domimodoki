@@ -1,9 +1,10 @@
 use crate::{
-    ask_tag::{AskCardTag, AskOptionTag},
-    card_instance::CardInstance,
-    effect::CardEffect,
-    number::NumberRange,
-    player::PlayerId,
+    core::{
+        ask_tag::{AskCardTag, AskOptionTag},
+        effect::CardEffect,
+        number::NumberRange,
+    },
+    game::{card_instance::CardInstance, player::PlayerId},
 };
 use std::collections::VecDeque;
 
