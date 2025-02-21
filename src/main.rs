@@ -8,222 +8,234 @@ fn main() {
 
 // Dominion simulator
 
-#[derive(Clone)]
-#[allow(dead_code)]
-struct PlayerData<'a> {
-    name: String,
-    deck: Vec<CardInstance<'a>>,
-    hand: Vec<CardInstance<'a>>,
-    play: Vec<CardInstance<'a>>,
-    pending: Vec<CardInstance<'a>>,
-    aside: Vec<CardInstance<'a>>,
-    revealed: Vec<CardInstance<'a>>,
-    discard: Vec<CardInstance<'a>>,
-    id: PlayerId,
+mod player {
+    #[derive(Clone)]
+    #[allow(dead_code)]
+    struct PlayerData<'a> {
+        name: String,
+        deck: Vec<CardInstance<'a>>,
+        hand: Vec<CardInstance<'a>>,
+        play: Vec<CardInstance<'a>>,
+        pending: Vec<CardInstance<'a>>,
+        aside: Vec<CardInstance<'a>>,
+        revealed: Vec<CardInstance<'a>>,
+        discard: Vec<CardInstance<'a>>,
+        id: PlayerId,
+    }
+
+    #[derive(Clone, Copy, PartialEq, Eq)]
+    #[allow(dead_code)]
+    struct PlayerId {
+        id: usize,
+    }
 }
 
-#[derive(Clone, Copy, PartialEq, Eq)]
-#[allow(dead_code)]
-struct PlayerId {
-    id: usize,
+mod card {
+    #[allow(dead_code)]
+    struct Card {
+        name: String,
+        localized_name: String,
+        cost: Number,
+        vp: Number,
+        rules: Vec<(EffectTrigger, CardEffect)>,
+        types: Vec<CardType>,
+    }
+
+    #[derive(Clone)]
+    #[allow(dead_code)]
+    enum CardAddress {
+        Supply(usize, usize),
+        PlayerOwned(PlayerId, Zone),
+        Trash,
+    }
+
+    #[derive(Clone)]
+    #[allow(dead_code)]
+    struct CardInstance<'a> {
+        card: &'a Card,
+        id: CardId,
+        address: CardAddress,
+    }
+
+    #[derive(Clone, Copy)]
+    #[allow(dead_code)]
+    struct CardId {
+        id: usize,
+    }
+
+    #[derive(Clone, PartialEq, Eq)]
+    #[allow(dead_code)]
+    enum CardType {
+        Action,
+        Treasure,
+        Victory,
+        Reaction,
+        Curse,
+        Attack,
+    }
 }
 
-#[allow(dead_code)]
-struct Card {
-    name: String,
-    localized_name: String,
-    cost: Number,
-    vp: Number,
-    rules: Vec<(EffectTrigger, CardEffect)>,
-    types: Vec<CardType>,
-}
+mod number {
+    #[derive(Clone)]
+    #[allow(dead_code)]
+    enum Number {
+        Constant(i32),
+        CountCard(CardSelector),
+        CountCost(CardSelector),
+        CountEmptyPiles,
+        Plus(Box<Number>, Box<Number>),
+        Minus(Box<Number>, Box<Number>),
+        Times(Box<Number>, Box<Number>), // 乗算
+        Div(Box<Number>, Box<Number>),   // 整数除算、切り捨て
+        Mod(Box<Number>, Box<Number>),   // 剰余
+    }
 
-#[derive(Clone)]
-#[allow(dead_code)]
-enum CardAddress {
-    Supply(usize, usize),
-    PlayerOwned(PlayerId, Zone),
-    Trash,
-}
+    #[derive(Clone)]
+    #[allow(dead_code)]
+    enum NumberRange<N> {
+        Exact(N),
+        UpTo(N),
+        AtLeast(N),
+        Range(N, N),
+        AnyNumber,
+    }
 
-#[derive(Clone)]
-#[allow(dead_code)]
-struct CardInstance<'a> {
-    card: &'a Card,
-    id: CardId,
-    address: CardAddress,
-}
-
-#[derive(Clone, Copy)]
-#[allow(dead_code)]
-struct CardId {
-    id: usize,
-}
-
-#[derive(Clone, PartialEq, Eq)]
-#[allow(dead_code)]
-enum CardType {
-    Action,
-    Treasure,
-    Victory,
-    Reaction,
-    Curse,
-    Attack,
-}
-
-#[derive(Clone)]
-#[allow(dead_code)]
-enum EffectTrigger {
-    Attacked,       // Focus: 空, PreventDefaultで攻撃を無効化
-    PlayAsAction,   // Focus: 空
-    PlayAsTreasure, // Focus: 空
-    CardPlayed,     // Focus: カード
-    Cleanup,        // Focus: 空, PreventDefaultで場にあっても捨て札にしない
-    MyTurnStart,
-    MyTurnEnd,
-    OncePerTurn(Box<EffectTrigger>),
-}
-
-#[derive(Clone)]
-#[allow(dead_code)]
-enum Number {
-    Constant(i32),
-    CountCard(CardSelector),
-    CountCost(CardSelector),
-    CountEmptyPiles,
-    Plus(Box<Number>, Box<Number>),
-    Minus(Box<Number>, Box<Number>),
-    Times(Box<Number>, Box<Number>), // 乗算
-    Div(Box<Number>, Box<Number>),   // 整数除算、切り捨て
-    Mod(Box<Number>, Box<Number>),   // 剰余
-}
-
-#[derive(Clone)]
-#[allow(dead_code)]
-enum NumberRange<N> {
-    Exact(N),
-    UpTo(N),
-    AtLeast(N),
-    Range(N, N),
-    AnyNumber,
-}
-
-impl NumberRange<i32> {
-    const fn contains(&self, n: i32) -> bool {
-        use NumberRange::*;
-        match self {
-            Exact(m) => n == *m,
-            UpTo(m) => n <= *m,
-            AtLeast(m) => n >= *m,
-            Range(a, b) => n >= *a && n <= *b,
-            AnyNumber => true,
+    impl NumberRange<i32> {
+        const fn contains(&self, n: i32) -> bool {
+            use NumberRange::*;
+            match self {
+                Exact(m) => n == *m,
+                UpTo(m) => n <= *m,
+                AtLeast(m) => n >= *m,
+                Range(a, b) => n >= *a && n <= *b,
+                AnyNumber => true,
+            }
         }
     }
 }
 
-#[derive(Clone)]
-#[allow(dead_code)]
-enum EffectCond {
-    Leq(Number, Number),
-    Geq(Number, Number),
-    Eq(Number, Number),
-    CondAnd(Vec<EffectCond>),
-    CondOr(Vec<EffectCond>),
-    CondNot(Box<EffectCond>),
+mod effect {
+    #[derive(Clone)]
+    #[allow(dead_code)]
+    enum EffectCond {
+        Leq(Number, Number),
+        Geq(Number, Number),
+        Eq(Number, Number),
+        CondAnd(Vec<EffectCond>),
+        CondOr(Vec<EffectCond>),
+        CondNot(Box<EffectCond>),
+    }
+
+    #[derive(Clone)]
+    #[allow(dead_code)]
+    enum EffectTrigger {
+        Attacked,       // Focus: 空, PreventDefaultで攻撃を無効化
+        PlayAsAction,   // Focus: 空
+        PlayAsTreasure, // Focus: 空
+        CardPlayed,     // Focus: カード
+        Cleanup,        // Focus: 空, PreventDefaultで場にあっても捨て札にしない
+        MyTurnStart,
+        MyTurnEnd,
+        OncePerTurn(Box<EffectTrigger>),
+    }
+
+    // カードの働きを記述するためのメタ言語
+    #[derive(Clone)]
+    #[allow(dead_code)]
+    enum CardEffect {
+        Noop,
+        Sequence(Vec<CardEffect>),
+        AtomicSequence(Vec<CardEffect>), // 「不可能な指示は無視」ができない場合（改築の破棄→獲得など）に使う。SkipContinueを伝播
+        Optional(AskOptionTag, Box<CardEffect>),
+
+        // Select亜種 該当カードすべてを選択、プレイヤーの選択を必要としない
+        FocusAll(CardSelector, Box<CardEffect>),
+
+        // Select系：カードを選択し、Focusの選択先を変更した上で、効果を適用する
+        Select(
+            AskCardTag,
+            NumberRange<Number>,
+            CardSelector,
+            Box<CardEffect>,
+        ), // n枚選択
+
+        TrashSelect(NumberRange<Number>, CardSelector, Box<CardEffect>), // Select亜種 手札から廃棄
+
+        DiscardSelect(NumberRange<Number>, CardSelector, Box<CardEffect>), // Select亜種 手札を捨てるs
+
+        // デッキトップ公開・Focus
+        RevealTop(Number, Box<CardEffect>),
+
+        LookAtTop(Number, Box<CardEffect>), // デッキトップを見るだけ
+
+        DrawFocus(Number, Box<CardEffect>), // ドローしてFocus
+
+        DrawFrom(CardSelector), // ドロー扱いで手札に加える
+
+        If(EffectCond, Box<CardEffect>),
+        While(EffectCond, Box<CardEffect>),
+        Until(EffectCond, Box<CardEffect>),
+
+        UseCard(CardSelector),
+
+        PlusDraw(Number),
+        PlusAction(Number),
+        PlusBuy(Number),
+        PlusCoin(Number),
+
+        TrashCard(CardSelector),
+        DiscardCard(CardSelector),
+        GainCard(CardNameSelector),
+        GainCardToHand(CardNameSelector), // 職人はこっち
+
+        MoveCard(CardSelector, Zone),
+
+        AllOpponents(Box<CardEffect>),
+        AttackAllOpponents(Box<CardEffect>),
+        PreventDefault, // 「○○する代わりに」の、元の動作を無効化するやつ
+    }
 }
 
-// カードの働きを記述するためのメタ言語
-#[derive(Clone)]
-#[allow(dead_code)]
-enum CardEffect {
-    Noop,
-    Sequence(Vec<CardEffect>),
-    AtomicSequence(Vec<CardEffect>), // 「不可能な指示は無視」ができない場合（改築の破棄→獲得など）に使う。SkipContinueを伝播
-    Optional(AskOptionTag, Box<CardEffect>),
+mod zone {
+    #[derive(Clone)]
+    #[allow(dead_code)]
+    enum Zone {
+        // 実在のゾーン。配置対象としてもよい
+        Deck,
+        Hand,
+        Discard,
+        Play,
+        Pending,
+        Aside,
+        Revealed,
 
-    // Select亜種 該当カードすべてを選択、プレイヤーの選択を必要としない
-    FocusAll(CardSelector, Box<CardEffect>),
-
-    // Select系：カードを選択し、Focusの選択先を変更した上で、効果を適用する
-    Select(
-        AskCardTag,
-        NumberRange<Number>,
-        CardSelector,
-        Box<CardEffect>,
-    ), // n枚選択
-
-    TrashSelect(NumberRange<Number>, CardSelector, Box<CardEffect>), // Select亜種 手札から廃棄
-
-    DiscardSelect(NumberRange<Number>, CardSelector, Box<CardEffect>), // Select亜種 手札を捨てるs
-
-    // デッキトップ公開・Focus
-    RevealTop(Number, Box<CardEffect>),
-
-    LookAtTop(Number, Box<CardEffect>), // デッキトップを見るだけ
-
-    DrawFocus(Number, Box<CardEffect>), // ドローしてFocus
-
-    DrawFrom(CardSelector), // ドロー扱いで手札に加える
-
-    If(EffectCond, Box<CardEffect>),
-    While(EffectCond, Box<CardEffect>),
-    Until(EffectCond, Box<CardEffect>),
-
-    UseCard(CardSelector),
-
-    PlusDraw(Number),
-    PlusAction(Number),
-    PlusBuy(Number),
-    PlusCoin(Number),
-
-    TrashCard(CardSelector),
-    DiscardCard(CardSelector),
-    GainCard(CardNameSelector),
-    GainCardToHand(CardNameSelector), // 職人はこっち
-
-    MoveCard(CardSelector, Zone),
-
-    AllOpponents(Box<CardEffect>),
-    AttackAllOpponents(Box<CardEffect>),
-    PreventDefault, // 「○○する代わりに」の、元の動作を無効化するやつ
+        // 以下は仮想的なゾーン
+        DeckTop, // デッキの一番上。配置対象としてもよい
+        AllMyCards,
+        Focused,
+        Itself,
+    }
 }
 
-#[derive(Clone)]
-#[allow(dead_code)]
-enum Zone {
-    // 実在のゾーン。配置対象としてもよい
-    Deck,
-    Hand,
-    Discard,
-    Play,
-    Pending,
-    Aside,
-    Revealed,
+mod selector {
+    #[derive(Clone)]
+    #[allow(dead_code)]
+    enum CardNameSelector {
+        Name(String),
+        NameAnd(Vec<CardNameSelector>),
+        NameOr(Vec<CardNameSelector>),
+        NameNot(Box<CardNameSelector>),
+        HasType(CardType),
+        Cost(Box<NumberRange<Number>>),
+        Any,
+    }
 
-    // 以下は仮想的なゾーン
-    DeckTop, // デッキの一番上。配置対象としてもよい
-    AllMyCards,
-    Focused,
-    Itself,
-}
-
-#[derive(Clone)]
-#[allow(dead_code)]
-enum CardNameSelector {
-    Name(String),
-    NameAnd(Vec<CardNameSelector>),
-    NameOr(Vec<CardNameSelector>),
-    NameNot(Box<CardNameSelector>),
-    HasType(CardType),
-    Cost(Box<NumberRange<Number>>),
-    Any,
-}
-
-#[derive(Clone)]
-#[allow(dead_code)]
-struct CardSelector {
-    name: CardNameSelector,
-    zone: Vec<Zone>,
+    #[derive(Clone)]
+    #[allow(dead_code)]
+    struct CardSelector {
+        name: CardNameSelector,
+        zone: Vec<Zone>,
+    }
 }
 
 #[derive(Clone)]
@@ -232,16 +244,6 @@ enum TurnPhase {
     Action,
     Buy,
     Cleanup,
-}
-
-#[derive(Clone)]
-#[allow(dead_code)]
-struct Game<'a> {
-    players: Vec<PlayerData<'a>>,
-    supply: Vec<Vec<(CardInstance<'a>, i32)>>,
-    trash: Vec<CardInstance<'a>>,
-    turn: i32,
-    stack: Vec<EffectStackFrame<'a>>,
 }
 
 #[derive(Clone)]
@@ -285,6 +287,16 @@ struct AskOptionTag {
 struct AskCardTag {
     tag: String,
     localized_prompt: String,
+}
+
+#[derive(Clone)]
+#[allow(dead_code)]
+struct Game<'a> {
+    players: Vec<PlayerData<'a>>,
+    supply: Vec<Vec<(CardInstance<'a>, i32)>>,
+    trash: Vec<CardInstance<'a>>,
+    turn: i32,
+    stack: Vec<EffectStackFrame<'a>>,
 }
 
 #[allow(dead_code)]
@@ -453,7 +465,7 @@ impl<'a> Game<'a> {
             .collect()
     }
 
-    fn step(mut self) -> EffectStepResult<'a> {
+    fn step(&mut self) -> EffectStepResult<'_> {
         use {CardEffect::*, EffectStepResult::*, Zone::*};
 
         let mut game = self;
@@ -487,7 +499,7 @@ impl<'a> Game<'a> {
                 newframe.effect_queue = VecDeque::from(vec![*effect]);
                 game.stack.push(frame);
                 game.stack.push(newframe);
-                return (game, AskOptional(target, prompt));
+                return AskOptional(target, prompt);
             }
             FocusAll(selector, effect) => {
                 let target = frame.target;
@@ -496,7 +508,7 @@ impl<'a> Game<'a> {
                 newframe.focus = self.resolve_selector(target, &selector);
                 game.stack.push(frame);
                 game.stack.push(newframe);
-                return (game, Continue);
+                return Continue;
             }
             Select(prompt, n, selector, effect) => {
                 let target = frame.target;
@@ -505,14 +517,11 @@ impl<'a> Game<'a> {
                 newframe.focus = vec![];
                 game.stack.push(frame);
                 game.stack.push(newframe);
-                return (
-                    game,
-                    AskCard(
-                        target,
-                        prompt,
-                        self.resolve_number_range(target, &n),
-                        self.resolve_selector(target, &selector),
-                    ),
+                return AskCard(
+                    target,
+                    prompt,
+                    self.resolve_number_range(target, &n),
+                    self.resolve_selector(target, &selector),
                 );
             }
             TrashSelect(n, selector, effect) => {
@@ -528,13 +537,10 @@ impl<'a> Game<'a> {
                 newframe.focus = vec![];
                 game.stack.push(frame);
                 game.stack.push(newframe);
-                return (
-                    game,
-                    AskTrash(
-                        target,
-                        self.resolve_number_range(target, &n),
-                        self.resolve_selector(target, &selector),
-                    ),
+                return AskTrash(
+                    target,
+                    self.resolve_number_range(target, &n),
+                    self.resolve_selector(target, &selector),
                 );
             }
             DiscardSelect(n, selector, effect) => {
@@ -550,13 +556,10 @@ impl<'a> Game<'a> {
                 newframe.focus = vec![];
                 game.stack.push(frame);
                 game.stack.push(newframe);
-                return (
-                    game,
-                    AskDiscard(
-                        target,
-                        self.resolve_number_range(target, &n),
-                        self.resolve_selector(target, &selector),
-                    ),
+                return AskDiscard(
+                    target,
+                    self.resolve_number_range(target, &n),
+                    self.resolve_selector(target, &selector),
                 );
             }
             RevealTop(n, effect) => {
@@ -567,13 +570,13 @@ impl<'a> Game<'a> {
                 newframe.focus = vec![];
                 game.stack.push(frame);
                 game.stack.push(newframe);
-                return (game, Continue);
+                return Continue;
             }
             _ => SkipContinue,
         };
 
         game.stack.push(frame);
-        (game, result)
+        result
     }
 }
 
