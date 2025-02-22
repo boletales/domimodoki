@@ -1,16 +1,16 @@
-use crate::game::card_instance::CardInstance;
+use crate::game::card_instance::CardInstanceId;
 
 #[derive(Clone)]
 #[allow(dead_code)]
-pub struct PlayerData<'a> {
+pub struct PlayerData {
     pub name: String,
-    pub deck: Vec<CardInstance<'a>>,
-    pub hand: Vec<CardInstance<'a>>,
-    pub play: Vec<CardInstance<'a>>,
-    pub pending: Vec<CardInstance<'a>>,
-    pub aside: Vec<CardInstance<'a>>,
-    pub revealed: Vec<CardInstance<'a>>,
-    pub discard: Vec<CardInstance<'a>>,
+    pub deck: Vec<CardInstanceId>,
+    pub hand: Vec<CardInstanceId>,
+    pub play: Vec<CardInstanceId>,
+    pub pending: Vec<CardInstanceId>,
+    pub aside: Vec<CardInstanceId>,
+    pub revealed: Vec<CardInstanceId>,
+    pub discard: Vec<CardInstanceId>,
     pub id: PlayerId,
 }
 

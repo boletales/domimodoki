@@ -13,7 +13,7 @@ use crate::{
         zone::Zone::{self, *},
     },
     game::{
-        card_instance::CardInstance,
+        card_instance::{CardInstance, CardInstanceId},
         effect_stack::{
             EffectStackFrame,
             EffectStepResult::{self, *},
@@ -22,16 +22,21 @@ use crate::{
     },
 };
 use rand::Rng;
-use std::{collections::VecDeque, vec};
+use std::{
+    clone,
+    collections::{HashMap, VecDeque},
+    vec,
+};
 
 #[derive(Clone)]
 #[allow(dead_code)]
 pub struct Game<'a> {
-    pub players: Vec<PlayerData<'a>>,
-    pub supply: Vec<Vec<(CardInstance<'a>, i32)>>,
-    pub trash: Vec<CardInstance<'a>>,
+    pub players: Vec<PlayerData>,
+    pub supply: Vec<Vec<CardInstanceId>>,
+    pub trash: Vec<CardInstanceId>,
     pub turn: i32,
-    pub stack: Vec<EffectStackFrame<'a>>,
+    pub stack: Vec<EffectStackFrame>,
+    card_instances: HashMap<CardInstanceId, CardInstance<'a>>,
 }
 
 #[allow(dead_code)]
@@ -52,7 +57,7 @@ impl<'a> Game<'a> {
     }
 
     /// プレイヤーのデッキからカードをn枚引く。（デッキ残量が不足している場合はリシャッフルしてから引く）
-    fn get_from_deck(&mut self, player: PlayerId, n: i32) -> Vec<CardInstance<'a>> {
+    fn get_from_deck(&mut self, player: PlayerId, n: i32) -> Vec<CardInstanceId> {
         let playerdata = self.get_player(player).unwrap();
         let mut cards = vec![];
 
@@ -73,7 +78,7 @@ impl<'a> Game<'a> {
     }
 
     /// デッキトップを見る（リシャッフルしない）
-    fn look_at_top(&self, player: PlayerId, n: i32) -> Vec<&'_ CardInstance<'a>> {
+    fn look_at_top(&self, player: PlayerId, n: i32) -> Vec<CardInstanceId> {
         let playerdata = self.get_player(player).unwrap();
         // 後半n枚を見る
         playerdata
@@ -82,15 +87,26 @@ impl<'a> Game<'a> {
             .rev()
             .take(n as usize)
             .rev()
+            .copied()
             .collect()
     }
 
-    fn get_player(&self, player: PlayerId) -> Option<&'_ PlayerData<'a>> {
+    fn get_player(&self, player: PlayerId) -> Option<&'_ PlayerData> {
         self.players.iter().find(move |p| p.id == player)
     }
 
-    fn get_player_mut(&mut self, player: PlayerId) -> Option<&'_ mut PlayerData<'a>> {
+    fn get_player_mut(&mut self, player: PlayerId) -> Option<&'_ mut PlayerData> {
         self.players.iter_mut().find(move |p| p.id == player)
+    }
+
+    fn get_card_instance(&self, id: CardInstanceId) -> Option<&'_ CardInstance<'a>> {
+        self.card_instances.get(&id)
+    }
+
+    fn get_card_instances(&self, ids: &Vec<CardInstanceId>) -> Vec<&'_ CardInstance<'a>> {
+        ids.iter()
+            .map(|id| self.get_card_instance(*id).unwrap())
+            .collect()
     }
 
     pub fn resolve_number(&self, player: PlayerId, n: &Number) -> i32 {
@@ -154,34 +170,37 @@ impl<'a> Game<'a> {
             return vec![];
         };
         match zone {
-            Zone::Deck => player.deck.iter().collect(),
-            Zone::Hand => player.hand.iter().collect(),
-            Zone::Discard => player.discard.iter().collect(),
-            Zone::Play => player.play.iter().collect(),
-            Zone::Pending => player.pending.iter().collect(),
-            Zone::Aside => player.aside.iter().collect(),
-            Zone::Revealed => player.revealed.iter().collect(),
-            Zone::DeckTop => player.deck.last().into_iter().collect(),
-            Zone::AllMyCards => [
-                &player.deck,
-                &player.hand,
-                &player.discard,
-                &player.play,
-                &player.pending,
-                &player.aside,
-                &player.revealed,
-            ]
-            .iter()
-            .flat_map(|v| v.iter())
-            .collect(),
+            Zone::Deck => self.get_card_instances(&player.deck),
+            Zone::Hand => self.get_card_instances(&player.hand),
+            Zone::Discard => self.get_card_instances(&player.discard),
+            Zone::Play => self.get_card_instances(&player.play),
+            Zone::Pending => self.get_card_instances(&player.pending),
+            Zone::Aside => self.get_card_instances(&player.aside),
+            Zone::Revealed => self.get_card_instances(&player.revealed),
+            Zone::DeckTop => {
+                self.get_card_instances(&player.deck.last().into_iter().copied().collect())
+            }
+            Zone::AllMyCards => self.get_card_instances(
+                &[
+                    &player.deck,
+                    &player.hand,
+                    &player.discard,
+                    &player.play,
+                    &player.pending,
+                    &player.aside,
+                    &player.revealed,
+                ]
+                .iter()
+                .flat_map(|v| v.iter().copied())
+                .collect(),
+            ),
             Zone::Focused => self
                 .stack
                 .last()
-                .map_or(vec![], |frame| frame.focus.clone()),
-            Zone::Itself => self
-                .stack
-                .last()
-                .map_or(vec![], |frame| frame.cause.into_iter().collect()),
+                .map_or(vec![], |frame| self.get_card_instances(&frame.focus)),
+            Zone::Itself => self.stack.last().map_or(vec![], |frame| {
+                self.get_card_instances(&frame.cause.into_iter().collect())
+            }),
             _ => vec![],
         }
     }
@@ -199,7 +218,7 @@ impl<'a> Game<'a> {
             .collect()
     }
 
-    fn pop_and_step(&mut self) -> EffectStepResult<'_> {
+    fn pop_and_step(&mut self) -> EffectStepResult {
         let Some(mut frame) = self.stack.pop() else {
             return End;
         };
@@ -209,111 +228,121 @@ impl<'a> Game<'a> {
             return Continue;
         };
 
+        let clone = frame.clone();
         self.stack.push(frame);
-        result
+        self.exec_effect_one(clone, effect)
     }
 
-    fn extend_frame(&mut self, effects: &Vec<CardEffect>) {
+    fn extend_frame(&mut self, effects: &[CardEffect]) {
         let Some(frame) = self.stack.last_mut() else {
             return;
         };
 
-        frame.effect_queue.extend(effects.clone());
+        frame.effect_queue.extend(effects.to_owned());
     }
 
-    fn exec_effect_one(
-        &'a mut self,
-        frame: &EffectStackFrame<'a>,
-        effect: &CardEffect,
-    ) -> EffectStepResult {
+    fn exec_effect_one(&mut self, frame: EffectStackFrame, effect: CardEffect) -> EffectStepResult {
         let result = match effect {
             Noop => Continue,
             Sequence(effects) => {
-                self.extend_frame(effects);
+                self.extend_frame(&effects);
                 Continue
             }
             AtomicSequence(effects) => {
-                let mut newframe = frame.clone();
-                newframe.effect_queue = VecDeque::from(effects.clone());
+                let mut newframe = frame;
+                newframe.effect_queue = VecDeque::from(effects);
                 newframe.atomic = true;
                 self.stack.push(newframe);
                 Continue
             }
             Optional(prompt, effect) => {
                 let target = frame.target;
-                let mut newframe = frame.clone();
-                newframe.effect_queue = VecDeque::from(vec![*effect.clone()]);
+                let mut newframe = frame;
+                newframe.effect_queue = VecDeque::from(vec![*effect]);
                 self.stack.push(newframe);
-                return AskOptional(target, prompt.clone());
+                return AskOptional(target, prompt);
             }
             FocusAll(selector, effect) => {
                 let target = frame.target;
-                let mut newframe = frame.clone();
-                newframe.effect_queue = VecDeque::from(vec![*effect.clone()]);
+                let mut newframe = frame;
+                newframe.effect_queue = VecDeque::from(vec![*effect]);
                 self.stack.push(newframe);
-                self.stack.last_mut().unwrap().focus = self.resolve_selector(target, &selector);
+                self.stack.last_mut().unwrap().focus = self
+                    .resolve_selector(target, &selector)
+                    .iter()
+                    .map(|c| c.id)
+                    .collect();
                 return Continue;
             }
             Select(prompt, n, selector, effect) => {
                 let target = frame.target;
-                let mut newframe = frame.clone();
-                newframe.effect_queue = VecDeque::from(vec![*effect.clone()]);
+                let mut newframe = frame;
+                newframe.effect_queue = VecDeque::from(vec![*effect]);
                 newframe.focus = vec![];
                 self.stack.push(newframe);
                 return AskCard(
                     target,
-                    prompt.clone(),
+                    prompt,
                     self.resolve_number_range(target, &n),
-                    self.resolve_selector(target, &selector),
+                    self.resolve_selector(target, &selector)
+                        .iter()
+                        .map(|c| c.info())
+                        .collect(),
                 );
             }
             TrashSelect(n, selector, effect) => {
                 let target = frame.target;
-                let mut newframe = frame.clone();
+                let mut newframe = frame;
                 newframe.effect_queue = VecDeque::from(vec![
                     TrashCard(CardSelector {
                         name: CardNameSelector::Any,
                         zone: vec![Focused],
                     }),
-                    *effect.clone(),
+                    *effect,
                 ]);
                 newframe.focus = vec![];
                 self.stack.push(newframe);
                 return AskTrash(
                     target,
                     self.resolve_number_range(target, &n),
-                    self.resolve_selector(target, &selector),
+                    self.resolve_selector(target, &selector)
+                        .iter()
+                        .map(|c| c.info())
+                        .collect(),
                 );
             }
             DiscardSelect(n, selector, effect) => {
                 let target = frame.target;
-                let mut newframe = frame.clone();
+                let mut newframe = frame;
                 newframe.effect_queue = VecDeque::from(vec![
                     DiscardCard(CardSelector {
                         name: CardNameSelector::Any,
                         zone: vec![Focused],
                     }),
-                    *effect.clone(),
+                    *effect,
                 ]);
                 newframe.focus = vec![];
                 self.stack.push(newframe);
                 return AskDiscard(
                     target,
                     self.resolve_number_range(target, &n),
-                    self.resolve_selector(target, &selector),
+                    self.resolve_selector(target, &selector)
+                        .iter()
+                        .map(|c| c.info())
+                        .collect(),
                 );
             }
             RevealTop(n, effect) => {
                 let target = frame.target;
                 let topn = self.get_from_deck(target, self.resolve_number(target, &n));
-                let mut newframe = frame.clone();
-                newframe.effect_queue = VecDeque::from(vec![*effect.clone()]);
+                let mut newframe = frame;
+                newframe.effect_queue = VecDeque::from(vec![*effect]);
                 newframe.focus = vec![];
                 self.stack.push(newframe);
                 return Continue;
             }
             _ => SkipContinue,
         };
-        return result;
+        result
     }
 }
