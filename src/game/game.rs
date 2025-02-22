@@ -1,12 +1,15 @@
 use crate::{
     core::{
         card::Card,
-        effect::CardEffect::*,
+        effect::CardEffect::{self, *},
         number::{
-            Number,
+            Number::{self, *},
             NumberRange::{self, *},
         },
-        selector::{CardNameSelector, CardSelector},
+        selector::{
+            CardNameSelector::{self, *},
+            CardSelector,
+        },
         zone::Zone::{self, *},
     },
     game::{
@@ -19,7 +22,7 @@ use crate::{
     },
 };
 use rand::Rng;
-use std::collections::VecDeque;
+use std::{collections::VecDeque, vec};
 
 #[derive(Clone)]
 #[allow(dead_code)]
@@ -49,7 +52,7 @@ impl<'a> Game<'a> {
     }
 
     /// プレイヤーのデッキからカードをn枚引く。（デッキ残量が不足している場合はリシャッフルしてから引く）
-    fn get_from_deck(mut self, player: PlayerId, n: i32) -> Vec<CardInstance<'a>> {
+    fn get_from_deck(&mut self, player: PlayerId, n: i32) -> Vec<CardInstance<'a>> {
         let playerdata = self.get_player(player).unwrap();
         let mut cards = vec![];
 
@@ -91,7 +94,6 @@ impl<'a> Game<'a> {
     }
 
     pub fn resolve_number(&self, player: PlayerId, n: &Number) -> i32 {
-        use crate::number::Number::*;
         match n {
             Constant(n) => *n,
             CountCard(selector) => self.resolve_selector(player, selector).len() as i32,
@@ -127,7 +129,6 @@ impl<'a> Game<'a> {
     }
 
     pub fn resolve_name(&self, player: PlayerId, selector: &CardNameSelector, card: &Card) -> bool {
-        use crate::selector::CardNameSelector::*;
         match selector {
             Name(name) => card.name == *name,
             NameAnd(selectors) => selectors.iter().all(|s| self.resolve_name(player, s, card)),
@@ -194,63 +195,74 @@ impl<'a> Game<'a> {
             .zone
             .iter()
             .flat_map(|zone| self.resolve_zone(target, zone))
-            .filter(|c| self.resolve_name(target, &selector.name, c.card))
+            .filter(|c: &&CardInstance<'a>| self.resolve_name(target, &selector.name, c.card))
             .collect()
     }
 
-    fn step(&mut self) -> EffectStepResult<'_> {
-        let mut game = self;
-
-        let Some(mut frame) = game.stack.pop() else {
+    fn pop_and_step(&mut self) -> EffectStepResult<'_> {
+        let Some(mut frame) = self.stack.pop() else {
             return End;
         };
 
         let Some(effect) = frame.effect_queue.clone().pop_front() else {
-            game.stack.pop();
+            self.stack.pop();
             return Continue;
         };
 
+        self.stack.push(frame);
+        result
+    }
+
+    fn extend_frame(&mut self, effects: &Vec<CardEffect>) {
+        let Some(frame) = self.stack.last_mut() else {
+            return;
+        };
+
+        frame.effect_queue.extend(effects.clone());
+    }
+
+    fn exec_effect_one(
+        &'a mut self,
+        frame: &EffectStackFrame<'a>,
+        effect: &CardEffect,
+    ) -> EffectStepResult {
         let result = match effect {
             Noop => Continue,
             Sequence(effects) => {
-                frame.effect_queue.extend(effects);
+                self.extend_frame(effects);
                 Continue
             }
             AtomicSequence(effects) => {
                 let mut newframe = frame.clone();
-                newframe.effect_queue = effects.into_iter().collect();
+                newframe.effect_queue = VecDeque::from(effects.clone());
                 newframe.atomic = true;
-                game.stack.push(frame);
-                game.stack.push(newframe);
-                return Continue;
+                self.stack.push(newframe);
+                Continue
             }
             Optional(prompt, effect) => {
                 let target = frame.target;
                 let mut newframe = frame.clone();
-                newframe.effect_queue = VecDeque::from(vec![*effect]);
-                game.stack.push(frame);
-                game.stack.push(newframe);
-                return AskOptional(target, prompt);
+                newframe.effect_queue = VecDeque::from(vec![*effect.clone()]);
+                self.stack.push(newframe);
+                return AskOptional(target, prompt.clone());
             }
             FocusAll(selector, effect) => {
                 let target = frame.target;
                 let mut newframe = frame.clone();
-                newframe.effect_queue = VecDeque::from(vec![*effect]);
-                newframe.focus = self.resolve_selector(target, &selector);
-                game.stack.push(frame);
-                game.stack.push(newframe);
+                newframe.effect_queue = VecDeque::from(vec![*effect.clone()]);
+                self.stack.push(newframe);
+                self.stack.last_mut().unwrap().focus = self.resolve_selector(target, &selector);
                 return Continue;
             }
             Select(prompt, n, selector, effect) => {
                 let target = frame.target;
                 let mut newframe = frame.clone();
-                newframe.effect_queue = VecDeque::from(vec![*effect]);
+                newframe.effect_queue = VecDeque::from(vec![*effect.clone()]);
                 newframe.focus = vec![];
-                game.stack.push(frame);
-                game.stack.push(newframe);
+                self.stack.push(newframe);
                 return AskCard(
                     target,
-                    prompt,
+                    prompt.clone(),
                     self.resolve_number_range(target, &n),
                     self.resolve_selector(target, &selector),
                 );
@@ -263,11 +275,10 @@ impl<'a> Game<'a> {
                         name: CardNameSelector::Any,
                         zone: vec![Focused],
                     }),
-                    *effect,
+                    *effect.clone(),
                 ]);
                 newframe.focus = vec![];
-                game.stack.push(frame);
-                game.stack.push(newframe);
+                self.stack.push(newframe);
                 return AskTrash(
                     target,
                     self.resolve_number_range(target, &n),
@@ -282,11 +293,10 @@ impl<'a> Game<'a> {
                         name: CardNameSelector::Any,
                         zone: vec![Focused],
                     }),
-                    *effect,
+                    *effect.clone(),
                 ]);
                 newframe.focus = vec![];
-                game.stack.push(frame);
-                game.stack.push(newframe);
+                self.stack.push(newframe);
                 return AskDiscard(
                     target,
                     self.resolve_number_range(target, &n),
@@ -295,18 +305,15 @@ impl<'a> Game<'a> {
             }
             RevealTop(n, effect) => {
                 let target = frame.target;
-                let topn = game.get_from_deck(target, self.resolve_number(target, &n));
+                let topn = self.get_from_deck(target, self.resolve_number(target, &n));
                 let mut newframe = frame.clone();
-                newframe.effect_queue = VecDeque::from(vec![*effect]);
+                newframe.effect_queue = VecDeque::from(vec![*effect.clone()]);
                 newframe.focus = vec![];
-                game.stack.push(frame);
-                game.stack.push(newframe);
+                self.stack.push(newframe);
                 return Continue;
             }
             _ => SkipContinue,
         };
-
-        game.stack.push(frame);
-        result
+        return result;
     }
 }
